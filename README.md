@@ -133,9 +133,19 @@ Because the plugin asks DSH to close itself rather than killing it, saved data i
 
 ## Goals
 
-A goal that was running before the restart is switched back on when its session comes back, so long-running work continues without anyone asking. The rule is narrow on purpose: only a goal that is still `active` is re-armed. A goal that was paused, blocked or completed before the restart is left exactly as it was.
+**A goal that is still running keeps running.** That is the whole rule: `active` means keep going, and nothing about a restart, a closed window or an idle afternoon changes it. Every start re-arms it, whether the restart was asked for by a conversation, typed by you, or done by the service manager, and whether or not anything was woken afterwards.
 
-If a goal cannot be brought back — it has used up its rounds, for example — the plugin logs it and leaves the goal untouched.
+Only three things stop a goal, and this plugin never does any of them:
+
+| Stop | By |
+| --- | --- |
+| you pause it | you, or the assistant on your instruction |
+| it is finished | the assistant marking it complete |
+| it cannot go on | the harness: the round limit is reached, or a round cannot even be queued (no credit, no credentials, …) |
+
+A goal stopped that way stays stopped — this plugin will not bring it back, so "I paused this on purpose" always wins. If the reason was a temporary one such as credit, ask for it to be resumed once that is sorted out.
+
+Goals and conversations recover independently: goals keep running across a restart even when no conversation was woken, and a conversation can be woken without any goal being involved.
 
 ## Compatibility
 

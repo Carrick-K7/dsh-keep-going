@@ -322,3 +322,36 @@ test('a goal whose resume fails is reported and left as it was', () => {
   built.listeners.get('agent/session-start')({ agent, source: 'resume' })
   assert.deepEqual(built.rearmed, [], 'a failed resume is not counted as re-armed')
 })
+
+test('an active goal is kept running by every start, whatever the reason', () => {
+  useHome()
+  const agent = makeAgent('session-me', 'idle')
+  const built = fakeContext({
+    agents: [agent],
+    goals: [{ id: 'goal-forever', sessionId: 'session-me', phase: 'active', revision: 1 }],
+  })
+  apply(built.ctx, {})
+  const start = built.listeners.get('agent/session-start')
+  // A manual `systemctl restart` produces no wake note at all, and a session
+  // that was idle when the restart happened is not woken either. Neither may
+  // stop an active goal: only pausing, completing or blocking it does.
+  for (const source of ['resume', 'startup', 'fork']) {
+    start({ agent, source })
+  }
+  assert.deepEqual(built.rearmed, ['goal-forever', 'goal-forever', 'goal-forever'],
+    'every start re-arms it, with no wake note and no other precondition')
+})
+
+test('a goal stopped by the harness is not resurrected', () => {
+  useHome()
+  for (const phase of ['paused', 'blocked', 'complete']) {
+    const agent = makeAgent('session-' + phase, 'idle')
+    const built = fakeContext({
+      agents: [agent],
+      goals: [{ id: 'goal-' + phase, sessionId: agent.id, phase, revision: 4 }],
+    })
+    apply(built.ctx, {})
+    built.listeners.get('agent/session-start')({ agent, source: 'resume' })
+    assert.deepEqual(built.rearmed, [], phase + ' must stay stopped until a person or the model resumes it')
+  }
+})

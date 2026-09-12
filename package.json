@@ -1,6 +1,6 @@
 {
   "name": "dsh-keep-going",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Restart DSH without losing the task in flight: the current turn finishes, the process exits cleanly for the supervisor to replace, and the next boot wakes the same session to keep going.",
   "keywords": [
     "dsh",

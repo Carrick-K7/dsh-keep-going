@@ -52,7 +52,7 @@ test('apply exposes the documented surface', () => {
   const { ctx, tools, commands } = fakeContext()
   apply(ctx, { drainTimeoutMs: 1000, stuckAgentMs: 60000 })
   assert.equal(name, 'keep-going')
-  assert.deepEqual([...inject], ['agents', 'tools'])
+  assert.deepEqual([...inject], ['agents', 'tools', 'commands'])
   assert.equal(SETTINGS_NAMESPACE, 'dsh-keep-going')
   assert.ok(typeof Config === 'function' || typeof Config === 'object')
   assert.deepEqual([...tools.keys()].sort(), ['cancel_harness_action', 'restart_harness', 'shutdown_harness'])
@@ -161,4 +161,61 @@ test('a marker without wake targets boots quietly', () => {
   const { ctx } = fakeContext({ agents: [me] })
   apply(ctx, {})
   assert.equal(me.steered.length, 0)
+})
+
+test('an unavailable optional service degrades the plugin instead of failing the boot', async () => {
+  useHome()
+  const me = makeAgent('session-me', 'idle')
+  const built = fakeContext({ agents: [me], onBoot: () => {} })
+  // Cordis throws when an undeclared service is read; the fake mirrors that so
+  // a regression to "read ctx.commands without inject" fails here, not at boot.
+  Object.defineProperty(built.ctx, 'commands', {
+    get() { throw new Error('cannot get property "commands" without inject') },
+  })
+  apply(built.ctx, { drainTimeoutMs: 60000, stuckAgentMs: 60000 })
+  assert.deepEqual([...built.tools.keys()].sort(), ['cancel_harness_action', 'restart_harness', 'shutdown_harness'])
+  const armed = await built.tools.get('restart_harness').execute({ waitMs: 60000 }, { agent: { id: 'session-me' } })
+  assert.equal(armed.ok, true)
+})
+
+test('the wake still runs when the tool surface cannot be registered', () => {
+  useHome()
+  fs.mkdirSync(stateDir(process.env), { recursive: true })
+  fs.writeFileSync(markerPath(process.env), JSON.stringify({
+    version: 1, action: 'restart', at: new Date().toISOString(), wake: true,
+    sessionIds: ['session-me'], exits: [], prompt: '接着干',
+  }))
+  const me = makeAgent('session-me', 'idle')
+  const built = fakeContext({ agents: [me] })
+  Object.defineProperty(built.ctx, 'tools', {
+    get() { throw new Error('cannot get property "tools" without inject') },
+  })
+  apply(built.ctx, {})
+  assert.equal(me.steered.length, 1, 'resume must not depend on the optional surfaces')
+  assert.equal(me.steered[0].content[0].text, '接着干')
+})
+
+test('end to end: arm → marker + clean exit → next boot resumes the caller', async () => {
+  useHome()
+  const me = makeAgent('session-me', 'idle')
+  const first = fakeContext({ agents: [me], onBoot: () => {} })
+  apply(first.ctx, { drainTimeoutMs: 1000, stuckAgentMs: 60000 })
+  const armed = await first.tools.get('restart_harness').execute(
+    { continuePrompt: '续跑验证' },
+    { agent: { id: 'session-me' } },
+  )
+  assert.equal(armed.ok, true)
+
+  // Wait for the drain, the marker write and the clean-exit request.
+  await new Promise((resolve) => setTimeout(resolve, 1800))
+  assert.equal(fs.existsSync(markerPath(process.env)), true, 'phase 1 wrote the marker')
+
+  // Phase 2: a new process boots with the same DSH_HOME — exactly what the
+  // supervisor starts after the exit.
+  const revived = makeAgent('session-me', 'idle')
+  const second = fakeContext({ agents: [revived] })
+  apply(second.ctx, {})
+  assert.equal(revived.steered.length, 1, 'phase 2 woke the recorded session')
+  assert.equal(revived.steered[0].content[0].text, '续跑验证')
+  assert.equal(fs.existsSync(markerPath(process.env)), false, 'marker consumed')
 })

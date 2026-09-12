@@ -6,6 +6,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   actionLabel,
+  isLiveTurn,
+  wakeTargets,
   buildMarker,
   continueMessage,
   dedupe,
@@ -91,4 +93,20 @@ test('actionLabel maps both action kinds', () => {
 test('dedupe keeps first-seen order and drops non-strings', () => {
   assert.deepEqual(dedupe(['b', 'a', 'b', '', null, 'a']), ['b', 'a'])
   assert.deepEqual(dedupe(undefined), [])
+})
+
+test('isLiveTurn counts only turns a restart would actually interrupt', () => {
+  const now = 1_000_000
+  const activity = new Map([['fresh', now - 1000], ['old', now - 120_000]])
+  assert.equal(isLiveTurn(agent('fresh'), activity, now, 60_000), true)
+  assert.equal(isLiveTurn(agent('old'), activity, now, 60_000), false, 'stuck turns are not woken')
+  assert.equal(isLiveTurn(agent('other', 'idle'), activity, now, 60_000), false)
+  assert.equal(isLiveTurn(agent('unknown'), activity, now, 60_000), true, 'unknown activity stays live')
+})
+
+test('wakeTargets is the caller plus the turns in flight, never idle roots', () => {
+  assert.deepEqual(wakeTargets('me', ['a', 'b']), ['me', 'a', 'b'])
+  assert.deepEqual(wakeTargets('me', ['me', 'a']), ['me', 'a'])
+  assert.deepEqual(wakeTargets(null, []), [])
+  assert.deepEqual(wakeTargets('me', undefined), ['me'])
 })

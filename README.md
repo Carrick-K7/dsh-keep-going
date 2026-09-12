@@ -32,7 +32,7 @@ DSH starts → the conversation is woken → the work continues
 | Starting DSH again after it closes | your service manager — for example systemd with `Restart=always` |
 | Undoing a plugin installation that stops DSH from starting | you; DSH reports the error and exits, it does not repair itself |
 | A settings page, a browser button, a process dashboard | nothing — this plugin has no part in the browser interface |
-| Waking any conversation other than the one that asked | on purpose: a restart wakes exactly one conversation, the one that requested it |
+| Waking conversations that were already idle when the restart was asked for | on purpose: they had nothing to continue |
 
 Keeping the scope this small is the point. The name says one thing: after the restart, keep going.
 
@@ -68,9 +68,15 @@ Arguments of `restart_harness`:
 | `waitMs` | How long this particular restart waits for running turns, in milliseconds. Replaces `drainTimeoutMs`. |
 | `force` | Restart even while **other** conversations are in the middle of an answer (default: no). Without it, the request is refused and the answer lists the conversations that are busy, so one conversation can never silently cut off another one's work. |
 
-## Which conversation is woken
+## Which conversations are woken, and with what
 
-Only the one that asked for the restart — for `restart_harness` that is the conversation containing the tool call. The message it wakes up with is that conversation's own instruction, so sending it anywhere else would make another conversation start working on someone else's problem. Other conversations that were in the middle of an answer are not woken and not told anything; they are simply left where they are.
+Every conversation whose answer the restart cut off is woken, so nothing is left hanging:
+
+- the conversation that asked receives **its own** instruction (its `continuePrompt`, or the default from the settings);
+- every other interrupted conversation receives a neutral "carry on" notice that names no task, so it decides for itself what it was doing;
+- conversations that were already idle are not woken — they had nothing to continue.
+
+The distinction matters: handing the caller's instruction to another conversation is what once made one conversation start working on someone else's problem.
 
 ## Settings
 

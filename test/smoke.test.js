@@ -140,7 +140,7 @@ test('the next boot steers the recorded session with the continue prompt', () =>
   fs.mkdirSync(stateDir(process.env), { recursive: true })
   fs.writeFileSync(markerPath(process.env), JSON.stringify({
     version: 1, action: 'restart', at: new Date().toISOString(), wake: true,
-    sessionIds: ['session-me'], exits: [], prompt: '继续未完成的工作',
+    owner: 'session-me', sessionIds: ['session-me'], exits: [], prompt: '继续未完成的工作',
   }))
   const me = makeAgent('session-me', 'idle')
   const { ctx } = fakeContext({ agents: [me] })
@@ -151,12 +151,13 @@ test('the next boot steers the recorded session with the continue prompt', () =>
   assert.equal(fs.existsSync(markerPath(process.env)), false, 'marker is consumed once')
 })
 
-test('a restart wakes the session that asked, and no other session', async () => {
+test('every interrupted session is woken, each with the right message', async () => {
   useHome()
   const me = makeAgent('session-me', 'idle')
   const busy = makeAgent('session-busy', 'running')
+  const busy2 = makeAgent('session-busy-2', 'running')
   const idle = makeAgent('session-idle', 'idle')
-  const first = fakeContext({ agents: [me, busy, idle], onBoot: () => {} })
+  const first = fakeContext({ agents: [me, busy, busy2, idle], onBoot: () => {} })
   apply(first.ctx, { drainTimeoutMs: 1000, stuckAgentMs: 60000 })
 
   const armed = await first.tools.get('restart_harness').execute(
@@ -167,16 +168,24 @@ test('a restart wakes the session that asked, and no other session', async () =>
   await new Promise((resolve) => setTimeout(resolve, 1800))
 
   const marker = JSON.parse(fs.readFileSync(markerPath(process.env), 'utf8'))
-  assert.deepEqual(marker.sessionIds, ['session-me'],
-    'another session must never receive this session\'s instruction')
+  assert.equal(marker.owner, 'session-me')
+  assert.deepEqual(marker.sessionIds, ['session-me', 'session-busy', 'session-busy-2'],
+    'the caller and every interrupted turn, never an idle session')
 
-  // Phase 2: the wake delivers the instruction to the caller only.
+  // Phase 2: the caller gets its own instruction, the others a neutral notice.
   const mine = makeAgent('session-me', 'idle')
   const other = makeAgent('session-busy', 'running')
-  apply(fakeContext({ agents: [mine, other] }).ctx, {})
-  assert.equal(mine.steered.length, 1)
+  const other2 = makeAgent('session-busy-2', 'running')
+  const untouched = makeAgent('session-idle', 'idle')
+  apply(fakeContext({ agents: [mine, other, other2, untouched] }).ctx, {})
   assert.equal(mine.steered[0].content[0].text, '接着干我的活')
-  assert.equal(other.steered.length, 0, 'an interrupted session is left alone')
+  for (const agent of [other, other2]) {
+    assert.equal(agent.steered.length, 1, agent.id + ' is woken')
+    assert.doesNotMatch(agent.steered[0].content[0].text, /接着干我的活/,
+      agent.id + ' must not receive the caller\'s instruction')
+    assert.match(agent.steered[0].content[0].text, /重启/)
+  }
+  assert.equal(untouched.steered.length, 0, 'an idle session stays untouched')
 })
 
 test('a marker without wake targets boots quietly', () => {
@@ -211,7 +220,7 @@ test('the wake still runs when the tool surface cannot be registered', () => {
   fs.mkdirSync(stateDir(process.env), { recursive: true })
   fs.writeFileSync(markerPath(process.env), JSON.stringify({
     version: 1, action: 'restart', at: new Date().toISOString(), wake: true,
-    sessionIds: ['session-me'], exits: [], prompt: '接着干',
+    owner: 'session-me', sessionIds: ['session-me'], exits: [], prompt: '接着干',
   }))
   const me = makeAgent('session-me', 'idle')
   const built = fakeContext({ agents: [me] })

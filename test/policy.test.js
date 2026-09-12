@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   actionLabel,
+  interruptedMessage,
   wakeTargets,
   buildMarker,
   continueMessage,
@@ -55,8 +56,9 @@ test('stormDecision allows wakes up to the limit and prunes old exits', () => {
 test('buildMarker carries the caller and drops sessions when waking is off', () => {
   const now = Date.UTC(2026, 8, 12, 0, 0, 0)
   const marker = buildMarker({
-    action: 'restart', now, wake: true, sessionIds: ['s1', 's1', 's2'], prompt: ' go ', exits: [now],
+    action: 'restart', now, wake: true, owner: 's1', sessionIds: ['s1', 's1', 's2'], prompt: ' go ', exits: [now],
   })
+  assert.equal(marker.owner, 's1')
   assert.equal(marker.wake, true)
   assert.deepEqual(marker.sessionIds, ['s1', 's2'])
   assert.equal(marker.prompt, 'go')
@@ -94,8 +96,16 @@ test('dedupe keeps first-seen order and drops non-strings', () => {
   assert.deepEqual(dedupe(undefined), [])
 })
 
-test('wakeTargets is the caller and only the caller', () => {
-  assert.deepEqual(wakeTargets('me'), ['me'])
-  assert.deepEqual(wakeTargets(null), [], 'a user command wakes nobody')
-  assert.deepEqual(wakeTargets(undefined), [])
+test('wakeTargets is the caller plus the interrupted sessions, caller first', () => {
+  assert.deepEqual(wakeTargets('me', ['a', 'b']), ['me', 'a', 'b'])
+  assert.deepEqual(wakeTargets('me', ['me', 'a']), ['me', 'a'], 'the caller is not duplicated')
+  assert.deepEqual(wakeTargets(null, ['a']), ['a'], 'a user command still wakes the interrupted ones')
+  assert.deepEqual(wakeTargets(null, []), [])
+})
+
+test('the interrupted notice carries no other session\'s instruction', () => {
+  const notice = interruptedMessage()
+  assert.match(notice, /重启/)
+  assert.doesNotMatch(notice, /keep-going 真实重启验证/)
+  assert.notEqual(notice, continueMessage('接着干我的活'))
 })

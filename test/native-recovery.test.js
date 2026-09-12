@@ -156,13 +156,31 @@ test('clearGoal removes a stopped goal durably and purges its recovery record', 
   assert.equal(second.k.errors.length, 0)
 })
 
-test('clearGoal refuses a goal that is still active', { timeout: 15000 }, async t => {
+test('clearGoal refuses a goal that is still executing', { timeout: 15000 }, async t => {
   const { boot } = await fixture(t)
   const { k, recovery } = await boot({ goalRounds: false })
   const a = await k.create('session-clear-active')
   k.ctx.goals.create(a, { objective: 'still running', maxGoalRounds: 3 })
   await assert.rejects(() => recovery.clearGoal(a.id), /pause/i)
   assert.equal(k.ctx.goals.get(a).phase, 'active')
+  assert.equal(k.errors.length, 0)
+})
+
+test('clearGoal pauses then clears an active goal that is not executing', { timeout: 15000 }, async t => {
+  const { boot, store } = await fixture(t)
+  const { k, recovery } = await boot({ goalRounds: false })
+  const a = await k.create('session-clear-disarmed')
+  const goal = k.ctx.goals.create(a, { objective: 'active but inert', maxGoalRounds: 3 })
+  k.ctx.goals.disarm(a) // no longer executing; durable phase stays active
+  assert.equal(k.ctx.goals.get(a).activation, 'disarmed')
+  const cleared = await recovery.clearGoal(a.id)
+  assert.equal(cleared.id, goal.id)
+  assert.equal(k.ctx.goals.get(a), undefined)
+  const ops = a.session.snapshotEvents()
+    .filter(e => e.type === 'goal/change' && ['pause', 'clear'].includes(e.data.operation))
+    .map(e => e.data.operation)
+  assert.deepEqual(ops, ['pause', 'clear'], 'both decisions stay auditable in history')
+  assert.equal(Object.values(store.read().jobs).filter(j => j.sessionId === a.id).length, 0)
   assert.equal(k.errors.length, 0)
 })
 

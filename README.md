@@ -32,7 +32,7 @@ Copied history in a new fork does not by itself authorize a second copy of the p
 Distributed through GitHub only; this package is not published to npm.
 
 ```sh
-dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.2
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.3
 ```
 
 ## When it acts — and when it stays out of the way
@@ -54,7 +54,7 @@ Tested with DSH `0.1.5-rc.2`. The profile must provide native sessions, persiste
 - **`/restart`**: the same normal waiting behaviour, with the command's conversation retained as the caller.
 - **`cancel_harness_action` / `/cancel-restart`**: cancel a pending restart from the conversation that requested it. The slash command works without starting a model turn. A second request cannot replace the first one's deadline or instructions.
 - **`keep_going_status` / `/keep-going`**: inspect restart progress and recovery problems in the current conversation, including unanswered questions.
-- **`keep_going_clear_goal`**: remove a goal that is stopped (paused, blocked or complete) from a given conversation, keeping its history as a tombstone and purging its recovery record. A goal that is still active must be paused first.
+- **`keep_going_clear_goal`**: remove a goal that is stopped (paused, blocked or complete) from a given conversation, keeping its history as a tombstone and purging its recovery record. A goal that is actively executing must be paused first; an active goal that is not executing is paused and cleared in one auditable step.
 
 By default, a waiting deadline is **not permission to kill a healthy task**. Without `force`, the request remains pending and continues waiting. `force: true` explicitly permits ending the process after the deadline; unfinished work is recorded first. A long tool or model request is never declared dead merely because it has been quiet for 60 seconds.
 

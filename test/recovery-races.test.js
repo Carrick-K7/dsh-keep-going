@@ -499,3 +499,15 @@ test('failed-attempt backoff and delivery identity survive coordinator recreatio
   if (saved.messageId !== h.job.messageId) assert.equal(h.calls.queued[0].id, saved.messageId, 'a preallocated retry id is stable across recreation')
   assert.deepEqual(Object.keys(h.store.read().jobs), [h.job.key])
 })
+
+test('a delivered message still pending in the inbox is not re-delivered every tick', bounded, async () => {
+  const job = savedJob({ kind: 'turn', status: 'delivered', retryAt: 0 })
+  const pending = message('recovery-message')
+  const h = fixture({ jobs: [job], facts: {
+    receipts: new Map([[job.messageId, { message: pending, seq: 10, state: 'pending' }]]),
+  } })
+  await h.recovery.tick()
+  await h.recovery.tick()
+  assert.deepEqual(h.calls.queued, [], 'the message is already durably queued; nothing more to send')
+  assert.ok(h.store.read().jobs[job.key], 'and its recovery record is kept until the turn settles')
+})

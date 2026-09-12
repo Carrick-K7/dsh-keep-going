@@ -1,6 +1,6 @@
 {
   "name": "dsh-keep-going",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "private": true,
   "description": "Recover unfinished DSH conversations after restart, keep active goals running, and preserve questions waiting for your answer.",
   "author": "Carrick",

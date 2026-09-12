@@ -1,20 +1,13 @@
-# dsh bundle patch: inserts this plugin into a profile's layer stack.
-# Every key below is the plugin's default; override a row in the profile's own
-# cordis.patch.yml (by `id: keep-going`) to change it per deployment.
+# Uses DSH's native session controller, persistent history and goal driver.
+# Recovery runs once after each restart; the plugin is dormant in steady state.
+# Override defaults through settings.yaml under dsh-keep-going.
 - insert:
     - id: keep-going
       name: dsh-keep-going
       config:
-        # Injected into the session after the restart. An explicit
-        # `continuePrompt` on the restart_harness call wins over this.
-        continuePrompt: DSH 已重启完成，请继续未完成的工作。
-        # Drain deadline: after this long the restart proceeds even if some
-        # turns are still running (they get woken and told to resume).
         drainTimeoutMs: 600000
-        # A `running` agent with no session activity for this long is treated as
-        # stuck and no longer blocks the restart.
-        stuckAgentMs: 60000
-        # Restart-storm guard: more than `stormLimit` exits inside
-        # `stormWindowMs` suppresses the post-restart wake (restart still runs).
-        stormLimit: 5
-        stormWindowMs: 300000
+        retryMinMs: 1000
+        retryMaxMs: 60000
+        restartExitCode: 75
+        restartBurstLimit: 5
+        restartWindowMs: 60000

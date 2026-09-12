@@ -2,123 +2,107 @@
 
 English | [中文](README.zh-CN.md)
 
-**Restart DSH without interrupting the work that is running.**
+**A gateway restart should not leave every unfinished conversation waiting for you to say “continue”.**
 
 ## The problem
 
-You have several conversations going. One of them asks DSH to restart — to load a plugin it just installed, or a setting it just changed. DSH stops, comes back a few seconds later, and every other conversation has stopped too. The answers being written are cut off mid-sentence, the long-running goals stop continuing, and nobody is told that anything happened. Nothing is broken — everything is simply waiting for a person to come along and say "carry on" in each conversation, one by one.
+Several conversations are working normally. One asks DSH to restart after installing a plugin. DSH comes back, but the other tasks do not. Their history is still there; their work has simply stopped. You have to find each conversation and tell it to continue.
 
-`dsh-keep-going` is what stops that from happening. One conversation's restart stays that conversation's business:
+`dsh-keep-going` restores unfinished work using DSH's saved conversation history. It does not require a browser to reopen each conversation, and it is not limited to restarts requested through the plugin.
 
-- the answer being written is finished before DSH closes, instead of being cut off;
-- the conversations the restart did interrupt are woken afterwards and told to carry on — the one that asked with its own instruction, the others with a plain "carry on";
-- a long-running goal that was still going is switched back on by itself, so it does not wait for anyone.
+A restart still briefly disconnects the process. The promise is **automatic task recovery**, not an uninterrupted network connection or restarting every task from the beginning.
 
-## How it does it
+## Expected behaviour
 
-1. **It waits.** When a restart or a shutdown is requested, DSH does not stop immediately. The plugin waits until the running turns have finished, then asks DSH to close itself in an orderly way.
-2. **It continues.** Before closing, it writes down which conversation asked for the restart. When DSH starts again, the plugin waits for that conversation to come back and sends it a message to carry on — you do not have to say anything.
-3. **It brings long-running goals back.** DSH disarms a session's goal every time the session starts, so a goal that was working before a restart would sit idle afterwards until someone asked again. This plugin re-arms any goal that is still `active`, which is exactly the set that the restart interrupted; goals that were paused, blocked or finished on purpose are left alone.
-
-```
-you or the assistant ask for a restart
-        │
-        ▼
-wait until the running turns have finished
-        │
-        ▼
-write down the conversation to wake, then close DSH in an orderly way
-        │
-        ▼
-the service manager (systemd, a Windows service, …) starts DSH again
-        │
-        ▼
-DSH starts → the conversation is woken → the work continues
-```
-
-## What it does not do
-
-| Not handled here | Handled by |
+| Before the restart | After DSH starts again |
 | --- | --- |
-| Starting DSH again after it closes | your service manager — for example systemd with `Restart=always` |
-| Undoing a plugin installation that stops DSH from starting | you; DSH reports the error and exits, it does not repair itself |
-| A settings page, a browser button, a process dashboard | nothing — this plugin has no part in the browser interface |
-| Waking conversations that were already idle when the restart was asked for | on purpose: they had nothing to continue |
+| An original goal is `active` | Restore its conversation and continue the goal. No recent-activity cutoff. |
+| A goal is paused, blocked or complete | Leave it stopped. Do not send a separate “continue” that bypasses this state. |
+| An ordinary task was interrupted | Restore its history and continue the unfinished work. |
+| A question is waiting for your answer | Keep the original question and remain waiting. Your reply in that conversation lets work continue. |
+| A task completed or you canceled it | Do not restart it. |
+| Recovery fails temporarily | Keep the recovery record and retry with increasing delays. |
+| Another conversation requested the restart | Never send its private continuation instructions to this conversation. |
 
-Keeping the scope this small is the point. The name says one thing: after the restart, keep going.
+Copied history in a new fork does not by itself authorize a second copy of the parent's work. A fork's own new tasks can still be recovered.
 
 ## Install
 
-```sh
-# from GitHub
-dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git
+Distributed through GitHub only; this package is not published to npm.
 
-# from a local copy
-dsh plugin --profile web add /path/to/dsh-keep-going
+```sh
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.0
 ```
 
-Then restart DSH once so the plugin is loaded.
+## When it acts — and when it stays out of the way
 
-**One requirement:** something must start DSH again after it closes. If nothing does, a restart leaves DSH stopped. See [Deployment](#deployment).
+Recovery runs **once after each process restart**, then the plugin goes dormant:
 
-## Tools and commands
+- At boot it scans persisted sessions once, restores eligible original work, and stops.
+- There is **no periodic scanning and no automatic restarting of conversations** while DSH is running normally. A user opening an old conversation is a normal action, not a restart: nothing is woken or re-armed by that alone.
+- An `active` goal interrupted by a restart is re-armed exactly once and handed entirely to DSH's own goal driver. If the driver later disarms it (an error, a limit), that is DSH's normal lifecycle — the plugin does not keep re-arming it in the background; only the next process restart recovers it again.
+- The only exception: while a requested restart is waiting for running work (drain), the plugin tracks live sessions so the exit is safe; and a goal that was interrupted while it was running is restored as a goal round, not as a generic “continue” — old work belonging to an active goal is handed to the goal driver, so it never receives someone else's prompt.
 
-| What you use | What it does | Does the conversation continue by itself? |
-| --- | --- | --- |
-| `restart_harness` (used by the assistant) | restarts after the current answer is finished | yes |
-| `shutdown_harness` (used by the assistant) | closes DSH without restarting | not applicable |
-| `cancel_harness_action` (used by the assistant) | cancels a restart or shutdown that has not happened yet | not applicable |
-| `/restart` (typed by you) | restarts after the current answer is finished | no, it waits for you |
-| `/shutdown` (typed by you) | closes DSH without restarting | not applicable |
+Restart DSH after installation. **A service manager must start DSH again when it exits.** This plugin does not launch replacement processes.
 
-Arguments of `restart_harness`:
+Tested with DSH `0.1.5-rc.2`. The profile must provide native sessions, persistent session query, the session controller, goals, tools and commands. Missing required services are a deployment error, not a silently disabled recovery feature.
 
-| Argument | Meaning |
-| --- | --- |
-| `continuePrompt` | What the conversation is told when it wakes up. Replaces the default text from the settings. |
-| `waitMs` | How long this particular restart waits for running turns, in milliseconds. Replaces `drainTimeoutMs`. |
-| `force` | Restart even while **other** conversations are in the middle of an answer (default: no). Without it, the request is refused and the answer lists the conversations that are busy, so one conversation can never silently cut off another one's work. |
+## Restart and status
 
-## Which conversations are woken, and with what
+- **`restart_harness`**: wait for running work, save newly received messages, then request a normal DSH exit. Accepts `continuePrompt` for the calling conversation only, `waitMs`, and `force`.
+- **`/restart`**: the same normal waiting behaviour, with the command's conversation retained as the caller.
+- **`cancel_harness_action` / `/cancel-restart`**: cancel a pending restart from the conversation that requested it. The slash command works without starting a model turn. A second request cannot replace the first one's deadline or instructions.
+- **`keep_going_status` / `/keep-going`**: inspect restart progress and recovery problems in the current conversation, including unanswered questions.
 
-Every conversation whose answer the restart cut off is woken, so nothing is left hanging:
+By default, a waiting deadline is **not permission to kill a healthy task**. Without `force`, the request remains pending and continues waiting. `force: true` explicitly permits ending the process after the deadline; unfinished work is recorded first. A long tool or model request is never declared dead merely because it has been quiet for 60 seconds.
 
-- the conversation that asked receives **its own** instruction (its `continuePrompt`, or the default from the settings);
-- every other interrupted conversation receives a neutral "carry on" notice that names no task, so it decides for itself what it was doing;
-- conversations that were already idle are not woken — they had nothing to continue.
+An actual pending user question can be saved without waiting indefinitely for an answer. The restart does not answer it; recovery stays in `waiting-user` until you reply.
 
-The distinction matters: handing the caller's instruction to another conversation is what once made one conversation start working on someone else's problem.
+**Stopping is different from restarting.** Use your service manager to stop DSH, for example `systemctl stop <unit>`. The compatibility tool `shutdown_harness` now explains this and performs no exit: under `Restart=always`, merely exiting would restart the service and falsely claim to have stopped it.
+
+## Questions and approvals
+
+The plugin recognizes DSH's `ask_user_question` calls and approval records. A synthetic “tool interrupted” result is not a human answer. Neither a goal round nor a generated “continue” counts as your reply.
+
+After a restart, the original question remains in the conversation history and recovery status. Reply in that conversation to continue. The plugin does **not** automatically resend the question, reconstruct an expired browser dialog, or guess your selection.
+
+Security approvals are not ordinary answers. An old `allowed-once` grant is never replayed to authorize an uncertain operation. An unresolved approval remains visible and needs a fresh decision through DSH's normal approval mechanism.
+
+## Recovery and duplicate work
+
+The plugin actively reads stored sessions, restores eligible original conversations through DSH's session controller, and checks current task state again before continuing. Its recovery file is retained until work is durably settled; reading the file does not consume it. A second restart or a temporary delivery failure therefore does not erase pending work.
+
+Recovery uses stable message identities, preserves pending input order, and keeps the caller's instructions separate from other conversations. It also stops an in-progress recovery attempt if shutdown or cancellation wins a race.
+
+**External effects are not universally exactly-once.** If a tool sent a message or deployed code immediately before a crash but its result was not saved, the outcome may be uncertain. The continuation asks the assistant to verify completed operations rather than blindly repeat them. Tools or channel adapters need their own idempotency support for stronger guarantees.
+
+## Goals and failure reasons
+
+An `active` goal is an ongoing task, even if the browser is closed or the gateway was restarted manually. It is restored without a “recently used” heuristic. But active does not mean ready to call the model: a goal waiting for your answer must continue waiting.
+
+Paused, completed and blocked goals remain unchanged. Existing DSH safety limits are not bypassed. Quota or credential errors, output limits, round limits and other non-retryable conditions are reported in recovery status rather than described as successful completion. Resolve the cause and explicitly continue the task through its original conversation or goal controls.
 
 ## Settings
 
-These live in the `dsh-keep-going` section of `settings.yaml` and can also be edited in the settings page:
+Set these under `dsh-keep-going` in `settings.yaml`:
 
 ```yaml
 dsh-keep-going:
-  continuePrompt: DSH 已重启完成，请继续未完成的工作。
-  drainTimeoutMs: 600000   # 10 minutes: stop waiting and close anyway
-  stuckAgentMs: 60000      # 60 seconds without activity: stop counting a turn as running
-  stormLimit: 5            # more than 5 restarts inside the window below: restart, but do not wake
-  stormWindowMs: 300000
+  drainTimeoutMs: 600000    # Initial wait: 10 minutes. Cutoff requires force:true.
+  retryMinMs: 1000
+  retryMaxMs: 60000
+  restartExitCode: 75      # Configure the service manager to restart this code.
+  restartBurstLimit: 5
+  restartWindowMs: 60000
 ```
 
-Two behaviours that matter:
+A burst of restarts delays recovery until the window passes; it does not delete tasks or permanently suppress their resumption. `stateDirectory` can select a separate recovery directory for an independent profile; changing it requires restarting DSH.
 
-- **A turn that has gone quiet stops blocking; a turn we know nothing about does not.** A conversation that is marked as running but has shown no activity for `stuckAgentMs` no longer holds up the restart. A conversation with no activity recorded at all still counts as running — so a restart can never throw away an answer just because the plugin had not seen that conversation yet.
-- **The waiting limit forces the restart, it does not cancel it.** When `drainTimeoutMs` passes, DSH closes anyway, and the note telling the conversation to continue has already been written. A restart you asked for is never quietly dropped.
+The old `stuckAgentMs`, `stormLimit`, `stormWindowMs` and `scanIntervalMs` settings are no longer used. In particular, silence is no longer a reason to discard a task, and there is no periodic scan interval because recovery is not periodic at all.
 
-## Files it writes
+## Deployment and saved files
 
-Everything is inside `$DSH_HOME/dsh-keep-going/`:
-
-- `restart.json` — written just before DSH closes, read and deleted at the next start.
-- `state.json` — the times of recent restarts, used to stop a restart loop.
-
-Delete that folder if you want to cancel a pending wake-up.
-
-## Deployment
-
-**Linux with systemd.** A service that restarts DSH on exit is enough:
+For systemd, a minimal compatible service uses:
 
 ```ini
 [Service]
@@ -127,41 +111,36 @@ Restart=always
 RestartSec=3
 ```
 
-Because the plugin asks DSH to close itself rather than killing it, saved data is written out and the port is released before the process ends. The service manager then starts a fresh DSH, which finds the note and wakes the conversation.
+Alternatively configure the service to restart exit code 75 explicitly. Do not add `SuccessExitStatus=75` to an `on-failure` policy without also arranging a forced restart for that code.
 
-**Windows, or no service manager.** Use something that starts DSH again when it exits — a Windows service, a scheduled task, or a small launcher in the notification area. The plugin itself never starts a process.
+Default recovery file: `$DSH_HOME/dsh-keep-going/recovery.json`. It contains pending task identities, retry state and, when needed, pending input or caller-only instructions. Newly created directories and files are private. Writes use file sync, atomic replacement and directory sync on supported systems. Invalid state is reported and preserved, not erased.
 
-## Goals
+Use one DSH process per recovery directory. The store does not coordinate independent concurrent writers. The old `restart.json` and `state.json` files are not used for message delivery; stored DSH history is the source for identifying work after an upgrade.
 
-**A goal that is still running keeps running.** That is the whole rule: `active` means keep going, and nothing about a restart, a closed window or an idle afternoon changes it. Every start re-arms it, whether the restart was asked for by a conversation, typed by you, or done by the service manager, and whether or not anything was woken afterwards.
+## Chat platforms, including Feishu
 
-Only three things stop a goal, and this plugin never does any of them:
+This is a DSH recovery plugin, not a Feishu connector. The connector must retain the mapping from a DSH session to its original chat/thread and deliver subsequent replies there. Recovery preserves the session identity; it must not invent a new destination.
 
-| Stop | By |
-| --- | --- |
-| you pause it | you, or the assistant on your instruction |
-| it is finished | the assistant marking it complete |
-| it cannot go on | the harness: the round limit is reached, or a round cannot even be queued (no credit, no credentials, …) |
+Automated tests verify distinct original chat/thread routing through a fixture and real DSH message events. **They do not call the Feishu API, prove delivery through a particular connector, or guarantee receipt of messages sent while the gateway was offline.** Those are connector-level integration checks.
 
-A goal stopped that way stays stopped — this plugin will not bring it back, so "I paused this on purpose" always wins. If the reason was a temporary one such as credit, ask for it to be resumed once that is sorted out.
-
-Goals and conversations recover independently: goals keep running across a restart even when no conversation was woken, and a conversation can be woken without any goal being involved.
-
-## Compatibility
-
-Written and tested against DSH `0.1.5-rc.2`. The plugin declares which parts of DSH it uses, so installing it on a very different DSH version reports a mismatch instead of failing silently while starting.
-
-## For developers
+## Development and verification
 
 ```sh
-node --test "test/*.test.js"   # 22 tests
+pnpm install --frozen-lockfile --ignore-scripts
+pnpm check
+pnpm test
 ```
 
-- `lib/policy.js` — every decision (when to stop waiting, which turns count as stuck, when to stop waking) as small functions with no side effects.
-- `lib/state.js` — reading and writing the two files above.
-- `lib/index.js` — connects the two to DSH.
-- `test/smoke.test.js` — starts the plugin against a stand-in for DSH, including one test that runs a full restart and wake-up cycle.
+Tests use real Cordis, DSH agents, goals, question tools and local persistence. Only the model and channel adapter are deterministic fixtures. Separate test processes are killed and restarted to check recovery without browser connections, repeated interruption, stable recovery IDs, isolated caller instructions, pending questions and retries. No test touches live DSH sessions or sends external chat messages.
+
+To run against an already installed DSH instead of downloading test dependencies:
+
+```sh
+DSH_NATIVE_TEST_RESOLVE_FROM=/path/to/install/package.json pnpm test
+```
+
+The resolver path chooses that installation's module tree. Tests fail rather than silently skipping when an explicit resolver is supplied and its dependencies are missing.
 
 ## License
 
-MIT
+MIT © 2026 Carrick

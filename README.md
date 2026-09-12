@@ -50,8 +50,8 @@ Keeping the scope this small is the point. The name says one thing: after the re
 ## Install
 
 ```sh
-# from npm (once published)
-dsh plugin --profile web add dsh-keep-going
+# from GitHub
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git
 
 # from a local copy
 dsh plugin --profile web add /path/to/dsh-keep-going

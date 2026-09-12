@@ -8,6 +8,7 @@ Normally a restart costs you the answer being written: DSH stops in the middle o
 
 1. **It waits.** When a restart or a shutdown is requested, DSH does not stop immediately. The plugin waits until the running turns have finished, then asks DSH to close itself in an orderly way.
 2. **It continues.** Before closing, it writes down which conversation asked for the restart. When DSH starts again, the plugin waits for that conversation to come back and sends it a message to carry on — you do not have to say anything.
+3. **It brings long-running goals back.** DSH disarms a session's goal every time the session starts, so a goal that was working before a restart would sit idle afterwards until someone asked again. This plugin re-arms any goal that is still `active`, which is exactly the set that the restart interrupted; goals that were paused, blocked or finished on purpose are left alone.
 
 ```
 you or the assistant ask for a restart
@@ -119,6 +120,12 @@ RestartSec=3
 Because the plugin asks DSH to close itself rather than killing it, saved data is written out and the port is released before the process ends. The service manager then starts a fresh DSH, which finds the note and wakes the conversation.
 
 **Windows, or no service manager.** Use something that starts DSH again when it exits — a Windows service, a scheduled task, or a small launcher in the notification area. The plugin itself never starts a process.
+
+## Goals
+
+A goal that was running before the restart is switched back on when its session comes back, so long-running work continues without anyone asking. The rule is narrow on purpose: only a goal that is still `active` is re-armed. A goal that was paused, blocked or completed before the restart is left exactly as it was.
+
+If a goal cannot be brought back — it has used up its rounds, for example — the plugin logs it and leaves the goal untouched.
 
 ## Compatibility
 

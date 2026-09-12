@@ -13,10 +13,12 @@ import { apply, Config, inject, name, SETTINGS_NAMESPACE } from '../lib/index.js
 import { markerPath, stateDir } from '../lib/state.js'
 
 /** Minimal Cordis context: enough surface for this plugin's apply(). */
-function fakeContext({ agents = [], onBoot = () => {} } = {}) {
+function fakeContext({ agents = [], onBoot = () => {}, goals = [] } = {}) {
   const tools = new Map()
   const commands = new Map()
   const listeners = new Map()
+  const goalState = new Map(goals.map((goal) => [goal.sessionId, goal]))
+  const rearmed = []
   const ctx = {
     agents: {
       list: () => agents,
@@ -25,12 +27,20 @@ function fakeContext({ agents = [], onBoot = () => {} } = {}) {
     },
     tools: { register: (definition) => { tools.set(definition.name, definition); return () => tools.delete(definition.name) } },
     commands: { register: (definition) => { commands.set(definition.name, definition) } },
+    goals: {
+      get: (agent) => goalState.get(agent.id),
+      resume: (agent, view) => {
+        if (view.phase !== 'active') throw new Error('not resumable: ' + view.phase)
+        rearmed.push(view.id)
+        return { ...view, revision: view.revision + 1 }
+      },
+    },
     effect: (fn) => { const dispose = fn(); return () => dispose?.() },
     on: (event, handler) => { listeners.set(event, handler); return () => listeners.delete(event) },
     inject: () => {},
     get: (service) => (service === 'appExit' ? onBoot : undefined),
   }
-  return { ctx, tools, commands, listeners }
+  return { ctx, tools, commands, listeners, rearmed }
 }
 
 /** A fresh `DSH_HOME` for one test. */
@@ -52,7 +62,7 @@ test('apply exposes the documented surface', () => {
   const { ctx, tools, commands } = fakeContext()
   apply(ctx, { drainTimeoutMs: 1000, stuckAgentMs: 60000 })
   assert.equal(name, 'keep-going')
-  assert.deepEqual([...inject], ['agents', 'tools', 'commands'])
+  assert.deepEqual([...inject], ['agents', 'tools', 'commands', 'goals'])
   assert.equal(SETTINGS_NAMESPACE, 'dsh-keep-going')
   assert.ok(typeof Config === 'function' || typeof Config === 'object')
   assert.deepEqual([...tools.keys()].sort(), ['cancel_harness_action', 'restart_harness', 'shutdown_harness'])
@@ -255,4 +265,60 @@ test('end to end: arm → marker + clean exit → next boot resumes the caller',
   assert.equal(revived.steered.length, 1, 'phase 2 woke the recorded session')
   assert.equal(revived.steered[0].content[0].text, '续跑验证')
   assert.equal(fs.existsSync(markerPath(process.env)), false, 'marker consumed')
+})
+
+test('a goal that was active before the restart is re-armed on start', () => {
+  useHome()
+  const agent = makeAgent('session-me', 'idle')
+  const built = fakeContext({
+    agents: [agent],
+    goals: [{ id: 'goal-1', sessionId: 'session-me', phase: 'active', revision: 7 }],
+  })
+  apply(built.ctx, {})
+  built.listeners.get('agent/session-start')({ agent, source: 'resume' })
+  assert.deepEqual(built.rearmed, ['goal-1'], 'the active goal is brought back')
+})
+
+test('goals that were stopped on purpose are left alone', () => {
+  useHome()
+  for (const phase of ['paused', 'blocked', 'complete']) {
+    const agent = makeAgent('session-' + phase, 'idle')
+    const built = fakeContext({
+      agents: [agent],
+      goals: [{ id: 'goal-' + phase, sessionId: agent.id, phase, revision: 1 }],
+    })
+    apply(built.ctx, {})
+    built.listeners.get('agent/session-start')({ agent, source: 'resume' })
+    assert.deepEqual(built.rearmed, [], phase + ' must not be resumed')
+  }
+})
+
+test('a session without a goal, or a goal service that throws, breaks nothing', () => {
+  useHome()
+  const noGoal = makeAgent('session-none', 'idle')
+  const built = fakeContext({ agents: [noGoal] })
+  apply(built.ctx, {})
+  built.listeners.get('agent/session-start')({ agent: noGoal, source: 'resume' })
+  assert.deepEqual(built.rearmed, [])
+
+  const broken = makeAgent('session-broken', 'idle')
+  const withBrokenGoals = fakeContext({ agents: [broken] })
+  Object.defineProperty(withBrokenGoals.ctx, 'goals', {
+    get() { throw new Error('cannot get property "goals" without inject') },
+  })
+  apply(withBrokenGoals.ctx, {})
+  assert.deepEqual([...withBrokenGoals.tools.keys()].length, 3, 'the tool surface still registers')
+})
+
+test('a goal whose resume fails is reported and left as it was', () => {
+  useHome()
+  const agent = makeAgent('session-me', 'idle')
+  const built = fakeContext({
+    agents: [agent],
+    goals: [{ id: 'goal-exhausted', sessionId: 'session-me', phase: 'active', revision: 3 }],
+  })
+  built.ctx.goals.resume = () => { throw new Error('exhausted goal rounds') }
+  apply(built.ctx, {})
+  built.listeners.get('agent/session-start')({ agent, source: 'resume' })
+  assert.deepEqual(built.rearmed, [], 'a failed resume is not counted as re-armed')
 })

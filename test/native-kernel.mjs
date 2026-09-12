@@ -18,6 +18,7 @@ export const NATIVE_PACKAGES = Object.freeze([
   'dsh-system-prompt', 'dsh-tools', 'dsh-session-persistence-jsonl',
   'dsh-session-query-sqlite', 'dsh-goal', 'dsh-session-checkpoint-policy',
   'dsh-agent-loop', 'dsh-goal-round-driver', 'dsh-typert-protocol',
+  'dsh-storage', 'dsh-storage-json', 'dsh-storage-domain', 'dsh-workspace',
 ].map((name) => '@deepseek-ai/' + name))
 
 /** Optional real interaction services; ordinary smoke kernels need neither. */
@@ -203,6 +204,12 @@ export async function createNativeKernel({
     }
     await mount('dsh-session-persistence-jsonl', { root: persistenceRoot, compression: 'none' })
     await mount('dsh-session-query-sqlite', { path: ':memory:', openAt: 'never' })
+    // Real archive registry: storage chain -> workspaceRegistry, same stack the
+    // base bundle uses, so archiveSession() writes durably in the fixture root.
+    await mount('dsh-storage')
+    await mount('dsh-storage-json', { root: join(root, 'storages') })
+    await mount('dsh-storage-domain', { backend: 'json' })
+    await mount('dsh-workspace')
     await mount('dsh-goal')
     await mount('dsh-session-checkpoint-policy')
     await mount('dsh-agent-loop', { agents: [] })

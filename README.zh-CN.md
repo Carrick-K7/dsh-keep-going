@@ -18,6 +18,7 @@
 | --- | --- |
 | 原有目标是 `active` | 恢复它的对话，继续目标；不按最近活跃时间筛除。 |
 | 目标已暂停、受阻或完成 | 保持停止；也不能另外发送“继续”绕过这个状态。 |
+| 对话已被**归档** | 绝不恢复。归档就是有意搁置；恢复会整体跳过它。 |
 | 普通对话的任务被打断 | 恢复原历史，继续未完成部分。 |
 | 正在等用户回答问题 | 保留原问题，继续等；用户在原对话回答后才继续。 |
 | 任务已完成，或用户取消了任务 | 不重新执行。 |
@@ -31,7 +32,7 @@
 只通过 GitHub 分发，不发布到 npm。
 
 ```sh
-dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.1
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.2
 ```
 
 ## 何时生效，何时绝不打扰
@@ -53,6 +54,7 @@ dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.gi
 - **`/restart`**：同样等待后重启，并正确记录输入命令的对话。
 - **`cancel_harness_action` / `/cancel-restart`**：由发起对话撤销待执行的重启。斜杠命令不需要先让模型开始回答。第二个请求不能覆盖第一个请求的期限或指令。
 - **`keep_going_status` / `/keep-going`**：查看重启进度和当前对话的恢复问题，包括尚未回答的问题。
+- **`keep_going_clear_goal`**：移除指定对话里已停止的目标（paused/blocked/complete），历史保留为 tombstone，同时清掉它的恢复记录；仍在运行的 active 目标必须先暂停。
 
 默认情况下，**等到期限不代表有权中断一个正常任务**。没有 `force` 时，请求会继续等待，而不是被悄悄取消。明确传入 `force: true` 后，才允许到期退出，并先保存未完成工作。长时间运行的工具或模型请求不会仅因 60 秒没有输出就被判定为“卡死”。
 

@@ -4,7 +4,17 @@ English | [中文](README.zh-CN.md)
 
 **Restart DSH without interrupting the work that is running.**
 
-Normally a restart costs you the answer being written: DSH stops in the middle of it, and afterwards nothing tells the assistant to continue. This plugin removes both problems.
+## The problem
+
+You have several conversations going. One of them asks DSH to restart — to load a plugin it just installed, or a setting it just changed. DSH stops, comes back a few seconds later, and every other conversation has stopped too. The answers being written are cut off mid-sentence, the long-running goals stop continuing, and nobody is told that anything happened. Nothing is broken — everything is simply waiting for a person to come along and say "carry on" in each conversation, one by one.
+
+`dsh-keep-going` is what stops that from happening. One conversation's restart stays that conversation's business:
+
+- the answer being written is finished before DSH closes, instead of being cut off;
+- the conversations the restart did interrupt are woken afterwards and told to carry on — the one that asked with its own instruction, the others with a plain "carry on";
+- a long-running goal that was still going is switched back on by itself, so it does not wait for anyone.
+
+## How it does it
 
 1. **It waits.** When a restart or a shutdown is requested, DSH does not stop immediately. The plugin waits until the running turns have finished, then asks DSH to close itself in an orderly way.
 2. **It continues.** Before closing, it writes down which conversation asked for the restart. When DSH starts again, the plugin waits for that conversation to come back and sends it a message to carry on — you do not have to say anything.

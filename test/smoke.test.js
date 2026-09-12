@@ -151,24 +151,32 @@ test('the next boot steers the recorded session with the continue prompt', () =>
   assert.equal(fs.existsSync(markerPath(process.env)), false, 'marker is consumed once')
 })
 
-test('only the caller is woken, not other idle root sessions', async () => {
+test('a restart wakes the session that asked, and no other session', async () => {
   useHome()
   const me = makeAgent('session-me', 'idle')
-  const other = makeAgent('session-other', 'idle')
-  const first = fakeContext({ agents: [me, other], onBoot: () => {} })
+  const busy = makeAgent('session-busy', 'running')
+  const idle = makeAgent('session-idle', 'idle')
+  const first = fakeContext({ agents: [me, busy, idle], onBoot: () => {} })
   apply(first.ctx, { drainTimeoutMs: 1000, stuckAgentMs: 60000 })
-  const armed = await first.tools.get('restart_harness').execute({}, { agent: { id: 'session-me' } })
+
+  const armed = await first.tools.get('restart_harness').execute(
+    { force: true, continuePrompt: '接着干我的活' },
+    { agent: { id: 'session-me' } },
+  )
   assert.equal(armed.ok, true)
   await new Promise((resolve) => setTimeout(resolve, 1800))
 
   const marker = JSON.parse(fs.readFileSync(markerPath(process.env), 'utf8'))
-  assert.deepEqual(marker.sessionIds, ['session-me'], 'an idle root session must not be woken')
+  assert.deepEqual(marker.sessionIds, ['session-me'],
+    'another session must never receive this session\'s instruction')
 
+  // Phase 2: the wake delivers the instruction to the caller only.
   const mine = makeAgent('session-me', 'idle')
-  const theirs = makeAgent('session-other', 'idle')
-  apply(fakeContext({ agents: [mine, theirs] }).ctx, {})
+  const other = makeAgent('session-busy', 'running')
+  apply(fakeContext({ agents: [mine, other] }).ctx, {})
   assert.equal(mine.steered.length, 1)
-  assert.equal(theirs.steered.length, 0, 'the idle session stays untouched')
+  assert.equal(mine.steered[0].content[0].text, '接着干我的活')
+  assert.equal(other.steered.length, 0, 'an interrupted session is left alone')
 })
 
 test('a marker without wake targets boots quietly', () => {

@@ -32,7 +32,7 @@ DSH starts → the conversation is woken → the work continues
 | Starting DSH again after it closes | your service manager — for example systemd with `Restart=always` |
 | Undoing a plugin installation that stops DSH from starting | you; DSH reports the error and exits, it does not repair itself |
 | A settings page, a browser button, a process dashboard | nothing — this plugin has no part in the browser interface |
-| Waking conversations that were idle when you asked for the restart | on purpose: only the conversation that asked, and any conversation that was interrupted mid-answer, are woken |
+| Waking any conversation other than the one that asked | on purpose: a restart wakes exactly one conversation, the one that requested it |
 
 Keeping the scope this small is the point. The name says one thing: after the restart, keep going.
 
@@ -67,6 +67,10 @@ Arguments of `restart_harness`:
 | `continuePrompt` | What the conversation is told when it wakes up. Replaces the default text from the settings. |
 | `waitMs` | How long this particular restart waits for running turns, in milliseconds. Replaces `drainTimeoutMs`. |
 | `force` | Restart even while **other** conversations are in the middle of an answer (default: no). Without it, the request is refused and the answer lists the conversations that are busy, so one conversation can never silently cut off another one's work. |
+
+## Which conversation is woken
+
+Only the one that asked for the restart — for `restart_harness` that is the conversation containing the tool call. The message it wakes up with is that conversation's own instruction, so sending it anywhere else would make another conversation start working on someone else's problem. Other conversations that were in the middle of an answer are not woken and not told anything; they are simply left where they are.
 
 ## Settings
 

@@ -31,7 +31,7 @@ Copied history in a new fork does not by itself authorize a second copy of the p
 Distributed through GitHub only; this package is not published to npm.
 
 ```sh
-dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.0
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.1
 ```
 
 ## When it acts — and when it stays out of the way

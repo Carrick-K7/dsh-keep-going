@@ -31,7 +31,7 @@
 只通过 GitHub 分发，不发布到 npm。
 
 ```sh
-dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.0
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.1
 ```
 
 ## 何时生效，何时绝不打扰

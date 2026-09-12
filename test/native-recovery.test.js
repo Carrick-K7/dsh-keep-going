@@ -86,6 +86,33 @@ test('without restart marker all original active goals restore, paused and compl
   assert.equal(second.k.errors.length, 0)
 })
 
+test('a later native goal disarm is not re-armed again in the same process', { timeout: 15000 }, async t => {
+  const { boot, store } = await fixture(t)
+  const first = await boot({ goalRounds: false })
+  const a = await first.k.create('session-no-rearm-loop')
+  first.k.ctx.goals.create(a, { objective: 'a goal whose driver errors after restore', maxGoalRounds: 3 })
+  await first.k.flush(a); await first.k.close()
+  const second = await boot({ goalRounds: false })
+  let resumeCalls = 0
+  const resumeGoal = second.adapter.resumeGoal
+  second.adapter.resumeGoal = (agent, goal) => { resumeCalls++; return resumeGoal(agent, goal) }
+  await second.recovery.discover(); await second.recovery.tick()
+  const restored = second.k.ctx.agents.get(a.id)
+  assert.equal(resumeCalls, 1)
+  assert.equal(second.k.ctx.goals.get(restored).activation, 'armed')
+  assert.deepEqual(store.read().jobs, {})
+  // Native lifecycle now disarms it (driver error, limit, user action). The
+  // plugin must NOT loop re-arms: that would be periodic session restarting.
+  second.k.ctx.goals.disarm(restored)
+  await second.k.flush(restored)
+  second.recovery.observeEvent(restored, { type: 'goal/change', data: { operation: 'disarm' } })
+  await second.recovery.discoverSession(a.id)
+  await second.recovery.tick(); await second.recovery.tick()
+  assert.equal(resumeCalls, 1, 'one re-arm per restart, then DSH owns the lifecycle')
+  assert.equal(second.k.ctx.goals.get(restored).activation, 'disarmed')
+  assert.equal(second.k.errors.length, 0)
+})
+
 test('temporary delivery failure survives another coordinator and retries with one message', { timeout: 15000 }, async t => {
   const { boot, store } = await fixture(t)
   const entered = Promise.withResolvers()

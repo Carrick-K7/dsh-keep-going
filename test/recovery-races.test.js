@@ -166,6 +166,19 @@ for (const stage of ['record', 'checkpoint']) {
   })
 }
 
+test('a failed checkpoint withholds the exit and keeps the request cancellable', bounded, async () => {
+  const h = controllerFixture({ onCheckpoint: async index => {
+    if (index > 0) throw new Error('injected checkpoint failure')
+  } })
+  assert.equal((await h.control.request('owner-a', {})).ok, true)
+  await h.control.check()
+  assert.deepEqual(h.exits, [], 'no exit without durable state')
+  assert.equal(h.control.status().pending?.owner, 'owner-a', 'the request stays visible')
+  assert.equal(h.control.status().holding, 0, 'a withheld restart holds nothing')
+  assert.equal((await h.control.cancel('owner-a')).ok, true, 'and it stays cancellable')
+  assert.equal(h.suspended(), false)
+})
+
 for (const stage of ['record', 'checkpoint']) {
   for (const outcome of ['resolve', 'reject']) {
     test(`stale ${stage} ${outcome} cannot overwrite or unsuspend a replacement restart`, bounded, async t => {
@@ -673,3 +686,20 @@ test('an exit claims work recorded during normal operation', bounded, async () =
   h.recovery.beforeExit()
   assert.equal(h.store.read().jobs[job.key].restartScoped, true, 'the restart now owns this record')
 })
+
+for (const [label, latest] of [
+  ['a newer completed turn', workTurn(4, 40, { kind: 'completed' })],
+  ['a newer interrupted turn', workTurn(4, 40, { kind: 'interrupted' })],
+]) {
+  test(`an admitted receipt for an older turn is retired, not replayed (${label})`, bounded, async () => {
+    const job = savedJob({ status: 'delivered' })
+    const delivered = message(job.messageId)
+    const h = fixture({ jobs: [job], facts: {
+      latest, receipts: new Map([[job.messageId, { message: delivered, seq: 21, state: 'admitted', turn: 2 }]]),
+    } })
+    await h.recovery.tick()
+    await h.recovery.tick()
+    assert.deepEqual(h.calls.queued, [], 'the old delivery is never replayed on a timer')
+    assert.deepEqual(h.store.read().jobs, {}, 'the settled record is retired')
+  })
+}

@@ -23,36 +23,82 @@ async function fixture(t, extra = {}) {
   return { k, api, exits, root }
 }
 
-test('real Cordis mounts plugin, holds new input during drain, preserves owner and supports cancellation', { timeout: 15000 }, async t => {
+async function until(predicate, timeoutMs = 5000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (predicate()) return true
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+  return predicate()
+}
+
+test('a scheduled restart leaves conversations working, preserves owner and supports cancellation', { timeout: 15000 }, async t => {
   const { k, api, exits } = await fixture(t)
   const a = await k.create('session-runtime-a')
+  k.ctx.goals.create(a, { objective: 'finish the runtime task', maxGoalRounds: 3 })
+  const before = k.ctx.goals.get(a).activation
   const accepted = await api.control.request(a.id, {})
   assert.equal(accepted.ok, true)
+  assert.equal(api.control.status().holding, 0, 'a waiting restart holds no conversation')
+  assert.equal(k.ctx.goals.get(a).activation, before, 'a waiting restart does not touch goal activation')
   a.followup(k.message('arrived while restart was waiting', { id: 'msg-during-drain' }))
-  assert.equal(a.status, 'idle', 'native maintenance keeps new work queued')
-  assert.equal(a.inbox.nextTurn.length, 1)
-  assert.equal(k.requests.length, 0)
+  assert.ok(await until(() => k.requests.length === 1), 'new input starts a turn at once instead of being parked')
+  assert.equal(a.inbox.nextTurn.length, 0, 'nothing is left queued in the inbox')
+  await a.whenIdle(); await k.flush(a)
   const denied = await api.control.request('other-owner', { force: true, waitMs: 1000 })
   assert.equal(denied.ok, false)
   assert.equal(api.control.status().pending.owner, a.id)
   assert.equal((await api.control.cancel('other-owner')).ok, false)
   const canceled = await k.ctx.commands.execute(a, '/cancel-restart', [], new AbortController().signal)
-  assert.equal(canceled.result.kind, 'success', 'the user can cancel even while the model is held')
-  await a.whenIdle(); await k.flush(a)
+  assert.equal(canceled.result.kind, 'success', 'the requesting conversation can cancel')
+  assert.equal(api.control.status().pending, null)
+  assert.equal(api.control.status().holding, 0, 'cancelling leaves no lock behind')
+  assert.equal(k.ctx.goals.get(a).activation, before, 'cancelling changes no goal state')
   assert.equal(k.requests.length, 1)
-  assert.equal(exits.length, 0)
+  assert.deepEqual(exits, [], 'nothing exited')
 })
 
-test('restart uses supervisor restart code and leaves durable pending arrivals', { timeout: 15000 }, async t => {
-  const { k, api, exits } = await fixture(t)
-  const a = await k.create('session-runtime-exit')
-  assert.equal((await api.control.request(a.id, { continuePrompt: 'caller only' })).ok, true)
-  a.followup(k.message('new input', { id: 'msg-after-request' }))
+test('a restart waits for work in another conversation, then exits with the supervisor code', { timeout: 15000 }, async t => {
+  const entered = Promise.withResolvers(), gate = Promise.withResolvers()
+  t.after(() => gate.resolve())
+  const { k, api, exits } = await fixture(t, { onRequest: async (request, { agent }) => {
+    if (agent?.id !== 'session-runtime-busy') return
+    entered.resolve(); await gate.promise
+  } })
+  const caller = await k.create('session-runtime-caller')
+  const busy = await k.create('session-runtime-busy')
+  assert.equal((await api.control.request(caller.id, { continuePrompt: 'caller only' })).ok, true)
+  busy.followup(k.message('work in another conversation', { id: 'msg-busy' }))
+  await entered.promise
   await api.control.check()
-  assert.deepEqual(exits, [75])
+  assert.deepEqual(exits, [], 'a healthy running turn is never cut without force')
+  assert.equal(api.control.status().holding, 0, 'waiting for work holds no conversation')
+  assert.equal(caller.status, 'idle', 'the waiting restart does not hold other conversations either')
+  gate.resolve()
+  await busy.whenIdle(); await k.flush(busy)
+  await api.control.check()
+  assert.deepEqual(exits, [75], 'the supervisor restart code is used')
   const jobs = api.recovery.status().pending
-  assert.ok(jobs.some(j => j.kind === 'request' && j.sessionId === a.id && j.prompt === 'caller only'))
-  assert.ok(jobs.some(j => j.kind === 'input' && j.inputId === 'msg-after-request' && j.disposalExpected))
+  assert.ok(jobs.some(j => j.kind === 'request' && j.sessionId === caller.id && j.prompt === 'caller only'),
+    'the caller-only continuation survives the exit')
+})
+
+test('force is the only thing that cuts running work at the deadline', { timeout: 15000 }, async t => {
+  const entered = Promise.withResolvers(), gate = Promise.withResolvers()
+  t.after(() => gate.resolve())
+  const { k, api, exits } = await fixture(t, { onRequest: async () => { entered.resolve(); await gate.promise } })
+  const a = await k.create('session-runtime-force')
+  assert.equal((await api.control.request(a.id, { waitMs: 1000, force: true })).ok, true)
+  a.followup(k.message('work that will be cut', { id: 'msg-cut' }))
+  await entered.promise
+  await api.control.check()
+  assert.deepEqual(exits, [], 'the deadline alone is not permission to cut work')
+  await new Promise(resolve => setTimeout(resolve, 1100))
+  await api.control.check()
+  assert.deepEqual(exits, [75], 'explicit force authorizes the deadline cut')
+  const jobs = api.recovery.status().pending
+  assert.ok(jobs.some(j => j.sessionId === a.id && j.savedInput?.id === 'msg-cut' && j.disposalExpected),
+    'the cut work is saved durably before the exit')
 })
 
 test('an actual unanswered user question permits safe restart without answering it', { timeout: 15000 }, async t => {

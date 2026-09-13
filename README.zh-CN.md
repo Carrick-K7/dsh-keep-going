@@ -34,7 +34,7 @@
 只通过 GitHub 分发，不发布到 npm。
 
 ```sh
-dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.4
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.5
 ```
 
 ## 何时生效，何时绝不打扰
@@ -60,6 +60,8 @@ dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.gi
 - **`keep_going_clear_goal`**：移除指定对话里已停止的目标（paused/blocked/complete），历史保留为 tombstone，同时清掉它的恢复记录；仍在执行中的目标必须先暂停；active 但未在执行的目标会先记录一次暂停、再移除，两步都可审计。
 
 默认情况下，**等到期限不代表有权中断一个正常任务**。没有 `force` 时，请求会继续等待，而不是被悄悄取消。明确传入 `force: true` 后，才允许到期退出，并先保存未完成工作。长时间运行的工具或模型请求不会仅因 60 秒没有输出就被判定为“卡死”。
+
+**已安排的重启绝不冻结 DSH。** 等待期间所有对话照常工作：新消息立刻开轮，目标保持 armed，不加任何锁。真正退出时仍在跑的工作由同步快照保存，重启后继续。维护锁只在交接的那一刻持有（先保存持久状态，且确认没有任务在跑），因此一个等待别的长任务的请求不可能拖住整个部署。
 
 如果正在等用户回答，可以保存问题后重启，不必无限等用户在线。重启不会替用户回答；恢复后保持 `waiting-user`，直到用户答复。
 

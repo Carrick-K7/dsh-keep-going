@@ -34,7 +34,7 @@ Copied history in a new fork does not by itself authorize a second copy of the p
 Distributed through GitHub only; this package is not published to npm.
 
 ```sh
-dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.4
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.5
 ```
 
 ## When it acts — and when it stays out of the way
@@ -60,6 +60,8 @@ Tested with DSH `0.1.5-rc.2`. The profile must provide native sessions, persiste
 - **`keep_going_clear_goal`**: remove a goal that is stopped (paused, blocked or complete) from a given conversation, keeping its history as a tombstone and purging its recovery record. A goal that is actively executing must be paused first; an active goal that is not executing is paused and cleared in one auditable step.
 
 By default, a waiting deadline is **not permission to kill a healthy task**. Without `force`, the request remains pending and continues waiting. `force: true` explicitly permits ending the process after the deadline; unfinished work is recorded first. A long tool or model request is never declared dead merely because it has been quiet for 60 seconds.
+
+**A scheduled restart never freezes DSH.** While the request waits, every conversation keeps working: a new message starts a turn at once, goals stay armed, and nothing is locked. Work that is still running when the exit actually happens is saved by the synchronous snapshot and continued afterwards. Maintenance is held only for the handover itself — after durable state is saved and only when nothing is running — so a request that waits for one long task elsewhere cannot stall the rest of the deployment.
 
 An actual pending user question can be saved without waiting indefinitely for an answer. The restart does not answer it; recovery stays in `waiting-user` until you reply.
 

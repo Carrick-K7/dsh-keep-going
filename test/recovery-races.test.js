@@ -15,7 +15,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { createControl } from '../lib/control.js'
 import { createRecovery } from '../lib/recovery.js'
-import { candidates, eligible, keyFor, messageIdFor, retryDelay } from '../lib/recovery-policy.js'
+import { candidates, eligible, failureCategory, interruptedByRestart, keyFor, messageIdFor, retryDelay, retryableEnd } from '../lib/recovery-policy.js'
 
 const bounded = { timeout: 2000 }
 const config = {
@@ -436,58 +436,72 @@ for (const failFlush of [false, true]) {
   })
 }
 
-function failedDeliveryFixture({ retryAt = 100_000 } = {}) {
+function failedDeliveryFixture({ retryAt = 100_000, reason = temporary() } = {}) {
   const job = savedJob({ status: 'delivered', retryAt })
   const delivered = { ...message(job.messageId), source: { kind: 'plugin', plugin: 'dsh-keep-going', form: 'instructions' } }
   const h = fixture({ jobs: [job], facts: {
-    latest: workTurn(2, 20, temporary()),
+    latest: workTurn(2, 20, reason),
     receipts: new Map([[job.messageId, { message: delivered, seq: 21, state: 'admitted', turn: 2 }]]),
   } })
   return { ...h, job, delivered }
 }
 
-test('delivered status does not bypass a future retryAt for an admitted failed continuation', bounded, async () => {
-  const h = failedDeliveryFixture({ retryAt: 100_500 })
-  await h.recovery.tick()
-  assert.deepEqual(h.calls.queued, [], 'polling delivered receipts is not permission to bypass the retry deadline')
-  assert.ok(h.store.read().jobs[h.job.key])
-})
+function queueFailureFixture() {
+  const job = savedJob({ status: 'pending', retryAt: 0 })
+  const h = fixture({ jobs: [job], facts: { latest: workTurn(1, 1, { kind: 'interrupted' }) } })
+  const working = h.adapter.queue.bind(h.adapter)
+  h.adapter.queue = () => { throw new Error('temporary delivery failure') }
+  return { ...h, job, working }
+}
 
-test('admitted temporary failures back off exponentially and queue acknowledgement does not reset failures', bounded, async () => {
-  const h = failedDeliveryFixture()
-  const ids = new Set([h.job.messageId])
-  for (let failure = 1; failure <= 4; failure++) {
-    const before = h.store.read().jobs[h.job.key]
-    h.clock.time = Math.max(h.clock.time, before.retryAt)
-    const detectedAt = h.clock.time
-    await h.recovery.tick()
-    const scheduled = h.store.read().jobs[h.job.key]
-    assert.ok(scheduled)
-    assert.equal(h.calls.queued.length, failure - 1, 'first observe the failure; do not immediately replay it')
-    assert.ok(scheduled.failures >= failure, 'native failed attempts must count, not just queue/restore exceptions')
-    assert.ok(scheduled.retryAt >= detectedAt + retryDelay(failure, config.retryMinMs, config.retryMaxMs))
-    assert.ok(scheduled.retryAt <= detectedAt + config.retryMaxMs, 'backoff remains capped')
-    h.clock.time = scheduled.retryAt - 1
-    await h.recovery.tick()
-    assert.equal(h.calls.queued.length, failure - 1)
-    h.clock.time = scheduled.retryAt
-    await h.recovery.tick()
-    assert.equal(h.calls.queued.length, failure)
-    const queued = h.calls.queued.at(-1)
-    assert.equal(ids.has(queued.id), false, 'confirmed failed attempts require a new persisted delivery identity')
-    ids.add(queued.id)
-    assert.ok(h.store.read().jobs[h.job.key].failures >= failure, 'successful queue/flush is not successful task settlement')
-    if (failure < 4) h.admitAndEnd(queued, temporary(), failure + 2)
-  }
-})
-
-test('failed-attempt backoff and delivery identity survive coordinator recreation', bounded, async () => {
+test('an admitted continuation that failed is blocked, never re-sent on a timer', bounded, async () => {
   const h = failedDeliveryFixture()
   await h.recovery.tick()
   const saved = h.store.read().jobs[h.job.key]
-  assert.equal(h.calls.queued.length, 0)
+  assert.equal(saved.status, 'blocked')
+  assert.match(saved.lastError, /Continuation failed/)
+  assert.deepEqual(h.calls.queued, [], 'a visible failure must not be replayed automatically')
+  await h.recovery.tick()
+  assert.deepEqual(h.calls.queued, [], 'blocked work stays put on later ticks')
+})
+
+test('a quota-exhausted continuation is blocked with the provider message', bounded, async () => {
+  const h = failedDeliveryFixture({ reason: { kind: 'error', error: {
+    code: 'UNKNOWN', message: "403 You've reached your 5-hour usage limit.",
+  } } })
+  await h.recovery.tick()
+  const saved = h.store.read().jobs[h.job.key]
+  assert.equal(saved.status, 'blocked')
+  assert.match(saved.lastError, /usage limit/)
+  assert.deepEqual(h.calls.queued, [])
+})
+
+test('delivery failures back off and stop at the attempt cap', bounded, async () => {
+  const h = queueFailureFixture()
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    h.clock.time = Math.max(h.clock.time, h.store.read().jobs[h.job.key].retryAt)
+    await h.recovery.tick()
+    const saved = h.store.read().jobs[h.job.key]
+    assert.ok(saved, 'the record is kept for diagnosis')
+    assert.equal(saved.failures, attempt)
+    if (attempt < 3) {
+      assert.equal(saved.status, 'retrying')
+      assert.ok(saved.retryAt > h.clock.time)
+    } else {
+      assert.equal(saved.status, 'blocked', 'the cap ends automatic retries')
+      assert.match(saved.lastError, /Delivery failed 3 times/)
+    }
+  }
+})
+
+test('delivery-failure backoff and identity survive coordinator recreation', bounded, async () => {
+  const h = queueFailureFixture()
+  await h.recovery.tick()
+  const saved = h.store.read().jobs[h.job.key]
+  assert.equal(saved.status, 'retrying')
   assert.ok(saved.retryAt > h.clock.time)
   assert.ok(saved.failures >= 1)
+  h.adapter.queue = h.working
   const again = createRecovery({ adapter: h.adapter, store: h.store, config, now: h.clock.now, log: silent })
   h.clock.time = saved.retryAt - 1
   await again.tick()
@@ -495,19 +509,167 @@ test('failed-attempt backoff and delivery identity survive coordinator recreatio
   h.clock.time = saved.retryAt
   await again.tick()
   assert.equal(h.calls.queued.length, 1)
-  assert.notEqual(h.calls.queued[0].id, h.job.messageId)
-  if (saved.messageId !== h.job.messageId) assert.equal(h.calls.queued[0].id, saved.messageId, 'a preallocated retry id is stable across recreation')
+  assert.equal(h.calls.queued[0].id, saved.messageId, 'the delivery identity is stable across recreation')
   assert.deepEqual(Object.keys(h.store.read().jobs), [h.job.key])
 })
 
-test('a delivered message still pending in the inbox is not re-delivered every tick', bounded, async () => {
-  const job = savedJob({ kind: 'turn', status: 'delivered', retryAt: 0 })
-  const pending = message('recovery-message')
+test('a disposal without our own restart intent is never treated as recoverable', () => {
+  const disposed = { kind: 'aborted', reason: { kind: 'disposed' } }
+  assert.equal(retryableEnd(disposed, { disposalExpected: true }), true, 'our own recorded exit is recoverable')
+  assert.equal(retryableEnd(disposed, { disposalExpected: false }), false, 'a manually stopped session is not')
+  assert.equal(retryableEnd(disposed, {}), false)
+  assert.equal(retryableEnd({ kind: 'aborted', reason: { kind: 'user' } }, { disposalExpected: true }), false)
+  assert.equal(retryableEnd({ kind: 'aborted', reason: { kind: 'hook' } }, { disposalExpected: true }), false)
+  assert.equal(retryableEnd({ kind: 'aborted', reason: { kind: 'legacy' } }, { disposalExpected: true }), false)
+  assert.equal(retryableEnd({ kind: 'interrupted' }, {}), true, 'a crash closer is exactly what recovery is for')
+})
+
+test('quota exhaustion is recognised in English and Chinese provider messages', () => {
+  const err = message => ({ kind: 'error', error: { code: 'UNKNOWN', message } })
+  assert.equal(failureCategory(err("You've reached your 5-hour usage limit.")), 'quota')
+  assert.equal(failureCategory(err('余额不足，请充值')), 'quota')
+  assert.equal(failureCategory(err('402 Payment Required')), 'quota')
+  assert.equal(failureCategory(err('insufficient balance')), 'quota')
+  assert.equal(failureCategory(err('429 too many requests, retry later')), 'temporary')
+})
+
+test('a session stopped by the user is not recovered again', bounded, async () => {
+  const job = savedJob({ status: 'delivered', retryAt: 0 })
+  const delivered = message(job.messageId)
   const h = fixture({ jobs: [job], facts: {
-    receipts: new Map([[job.messageId, { message: pending, seq: 10, state: 'pending' }]]),
+    latest: workTurn(2, 20, { kind: 'aborted', reason: { kind: 'disposed' } }),
+    receipts: new Map([[job.messageId, { message: delivered, seq: 21, state: 'admitted', turn: 2 }]]),
   } })
   await h.recovery.tick()
+  const saved = h.store.read().jobs[job.key]
+  assert.equal(saved.status, 'blocked')
+  assert.match(saved.lastError, /Stopped outside a restart/)
+  assert.deepEqual(h.calls.queued, [], 'a manual stop must never be re-sent')
+  // And rediscovery must not create a fresh job for that same stopped turn.
+  await h.recovery.discoverSession('session-a')
+  assert.deepEqual(h.calls.queued, [])
+})
+
+test('a discovery pass does not resurrect an unfinished turn the user disposed', () => {
+  const facts = {
+    header: { id: 'session-stop', origin: 'root' }, inheritedEventCount: 0,
+    goal: null, goalOwned: false, pending: [], receipts: new Map(),
+    latest: workTurn(1, 1, { kind: 'aborted', reason: { kind: 'disposed' } }),
+  }
+  assert.deepEqual(candidates(facts), [])
+})
+
+test('only a restart interruption counts as recoverable work', () => {
+  assert.equal(interruptedByRestart({ kind: 'interrupted' }), true, 'a dead process is what this plugin recovers')
+  assert.equal(interruptedByRestart({ kind: 'aborted', reason: { kind: 'disposed' } }, { disposalExpected: true }), true)
+  assert.equal(interruptedByRestart({ kind: 'aborted', reason: { kind: 'disposed' } }), false)
+  for (const reason of [
+    { kind: 'aborted', reason: { kind: 'user' } },
+    { kind: 'aborted', reason: { kind: 'hook' } },
+    { kind: 'blocked' },
+    { kind: 'max-tokens' },
+    { kind: 'error', error: { code: 'TEMPORARY_PROVIDER_ERROR', message: 'try later' } },
+    null,
+  ]) assert.equal(interruptedByRestart(reason), false, `${JSON.stringify(reason)} is not restart work`)
+})
+
+test('an open turn is recorded, so a crash before it ends is still recoverable', () => {
+  const facts = {
+    header: { id: 'session-live', origin: 'root' }, inheritedEventCount: 0, goal: null, goalOwned: false,
+    pending: [], receipts: new Map(), latest: workTurn(4, 40, null),
+  }
+  const work = candidates(facts)
+  assert.equal(work.length, 1)
+  assert.equal(work[0].kind, 'turn')
+  assert.equal(work[0].turn, 4)
+})
+
+test('a steady-state failure never becomes recovery work', () => {
+  for (const reason of [
+    { kind: 'aborted', reason: { kind: 'user' } },
+    { kind: 'blocked' },
+    { kind: 'error', error: { code: 'TEMPORARY_PROVIDER_ERROR', message: 'try later' } },
+    { kind: 'error', error: { code: 'UNKNOWN', message: "403 You've reached your 5-hour usage limit." } },
+  ]) {
+    const facts = {
+      header: { id: 'session-live', origin: 'root' }, inheritedEventCount: 0, goal: null, goalOwned: false,
+      pending: [], receipts: new Map(), latest: workTurn(4, 40, reason),
+    }
+    assert.deepEqual(candidates(facts), [], `${reason.kind} must not create a job while the harness is up`)
+  }
+})
+
+test('repeated restart interruptions stop at the attempt cap instead of looping', bounded, async () => {
+  const job = savedJob({ status: 'delivered', retryAt: 0 })
+  const attemptId = attempt => messageIdFor(job.key, attempt)
+  const receiptFor = id => ({ message: message(id), seq: 21, state: 'admitted', turn: 2 })
+  const h = fixture({ jobs: [job], facts: {
+    latest: workTurn(2, 20, { kind: 'interrupted' }), receipts: new Map([[job.messageId, receiptFor(job.messageId)]]),
+  } })
+  // First restart interruption: one more continuation, under a new identity.
   await h.recovery.tick()
-  assert.deepEqual(h.calls.queued, [], 'the message is already durably queued; nothing more to send')
-  assert.ok(h.store.read().jobs[job.key], 'and its recovery record is kept until the turn settles')
+  assert.equal(h.calls.queued.length, 1)
+  assert.equal(h.calls.queued[0].id, attemptId(1), 'the consumed attempt needs its own message id')
+  // Second interruption, then the cap: three deliveries total, then a report.
+  for (const attempt of [2, 3]) {
+    h.admitAndEnd(message(attemptId(attempt - 1)), { kind: 'interrupted' }, 3)
+    h.recovery.suspend(false)
+    h.clock.time = h.store.read().jobs[job.key].retryAt
+    await h.recovery.tick()
+    if (attempt === 2) assert.equal(h.calls.queued.length, 2)
+  }
+  const saved = h.store.read().jobs[job.key]
+  assert.equal(saved.status, 'blocked')
+  assert.equal(saved.attempt, 3)
+  assert.match(saved.lastError, /Continuation interrupted 3 times/)
+  assert.equal(h.calls.queued.length, 2, 'no fourth delivery is attempted')
+})
+
+test('a delivered caller request settles instead of being replayed forever', bounded, async () => {
+  const job = savedJob({ kind: 'request', workId: 'request:req-1', requestSeq: 1, status: 'delivered', prompt: 'PRIVATE' })
+  const delivered = message(job.messageId)
+  const h = fixture({ jobs: [job], facts: {
+    latest: workTurn(2, 20, { kind: 'completed' }),
+    receipts: new Map([[job.messageId, { message: delivered, seq: 21, state: 'admitted', turn: 2 }]]),
+  } })
+  await h.recovery.discoverSession(job.sessionId)
+  await h.recovery.tick()
+  assert.deepEqual(h.store.read().jobs, {}, 'a finished caller request must be removed, not re-sent')
+  assert.deepEqual(h.calls.queued, [])
+})
+
+test('a caller request whose continuation failed is blocked, never re-sent', bounded, async () => {
+  const job = savedJob({ kind: 'request', workId: 'request:req-2', requestSeq: 1, status: 'delivered', prompt: 'PRIVATE' })
+  const delivered = message(job.messageId)
+  const h = fixture({ jobs: [job], facts: {
+    latest: workTurn(2, 20, { kind: 'error', error: { code: 'UNKNOWN', message: "You've reached your 5-hour usage limit." } }),
+    receipts: new Map([[job.messageId, { message: delivered, seq: 21, state: 'admitted', turn: 2 }]]),
+  } })
+  await h.recovery.tick()
+  assert.equal(h.store.read().jobs[job.key].status, 'blocked')
+  assert.deepEqual(h.calls.queued, [])
+})
+
+test('a failure while nothing was restarting is never recovered', bounded, async () => {
+  const job = savedJob() // recorded during normal operation: no restart scope
+  const h = fixture({ jobs: [job], facts: { latest: workTurn(1, 1, temporary()) } })
+  await h.recovery.tick()
+  assert.deepEqual(h.store.read().jobs, {}, 'the checkpoint is retired, not turned into work')
+  assert.deepEqual(h.calls.queued, [])
+})
+
+test('an interruption found in a checkpoint is still recovered', bounded, async () => {
+  const job = savedJob()
+  const h = fixture({ jobs: [job], facts: { latest: workTurn(1, 1, { kind: 'interrupted' }) } })
+  await h.recovery.tick()
+  assert.equal(h.calls.queued.length, 1, 'a crash is exactly what this work was recorded for')
+  assert.equal(h.store.read().jobs[job.key].status, 'delivered')
+})
+
+test('an exit claims work recorded during normal operation', bounded, async () => {
+  const job = savedJob()
+  const h = fixture({ jobs: [job], running: true, facts: { latest: workTurn(1, 1, null) } })
+  assert.equal(h.store.read().jobs[job.key].restartScoped, undefined)
+  h.recovery.beforeExit()
+  assert.equal(h.store.read().jobs[job.key].restartScoped, true, 'the restart now owns this record')
 })

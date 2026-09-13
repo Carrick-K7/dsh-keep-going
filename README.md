@@ -22,7 +22,9 @@ A restart still briefly disconnects the process. The promise is **automatic task
 | An ordinary task was interrupted | Restore its history and continue the unfinished work. |
 | A question is waiting for your answer | Keep the original question and remain waiting. Your reply in that conversation lets work continue. |
 | A task completed or you canceled it | Do not restart it. |
-| Recovery fails temporarily | Keep the recovery record and retry with increasing delays. |
+| You stopped a conversation yourself | Leave it stopped. A stop you performed is never read as a restart. |
+| The provider reports quota, credit or a hard request error | Stop and report it. Waiting adds no credit, so nothing is retried. |
+| Work we already sent fails, or the restart happens again mid-continuation | Report it and stop, except that a further restart may continue interrupted work — at most three automatic attempts for one task, then it is left for you. |
 | Another conversation requested the restart | Never send its private continuation instructions to this conversation. |
 
 Copied history in a new fork does not by itself authorize a second copy of the parent's work. A fork's own new tasks can still be recovered.
@@ -32,7 +34,7 @@ Copied history in a new fork does not by itself authorize a second copy of the p
 Distributed through GitHub only; this package is not published to npm.
 
 ```sh
-dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.3
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.4
 ```
 
 ## When it acts — and when it stays out of the way
@@ -40,6 +42,7 @@ dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.gi
 Recovery runs **once after each process restart**, then the plugin goes dormant:
 
 - At boot it scans persisted sessions once, restores eligible original work, and stops.
+- Only a **restart interruption** is recoverable. While DSH runs normally the plugin keeps a lightweight checkpoint of unfinished turns, so a crash during one can still be found; but a task that failed while DSH was up — a provider error, a blocked turn, a task you stopped — is not restart work. Its checkpoint is retired and nothing is ever sent, retried or resumed behind your back.
 - There is **no periodic scanning and no automatic restarting of conversations** while DSH is running normally. A user opening an old conversation is a normal action, not a restart: nothing is woken or re-armed by that alone.
 - An `active` goal interrupted by a restart is re-armed exactly once and handed entirely to DSH's own goal driver. If the driver later disarms it (an error, a limit), that is DSH's normal lifecycle — the plugin does not keep re-arming it in the background; only the next process restart recovers it again.
 - The only exception: while a requested restart is waiting for running work (drain), the plugin tracks live sessions so the exit is safe; and a goal that was interrupted while it was running is restored as a goal round, not as a generic “continue” — old work belonging to an active goal is handed to the goal driver, so it never receives someone else's prompt.
@@ -82,7 +85,7 @@ Recovery uses stable message identities, preserves pending input order, and keep
 
 An `active` goal is an ongoing task, even if the browser is closed or the gateway was restarted manually. It is restored without a “recently used” heuristic. But active does not mean ready to call the model: a goal waiting for your answer must continue waiting.
 
-Paused, completed and blocked goals remain unchanged. Existing DSH safety limits are not bypassed. Quota or credential errors, output limits, round limits and other non-retryable conditions are reported in recovery status rather than described as successful completion. Resolve the cause and explicitly continue the task through its original conversation or goal controls.
+Paused, completed and blocked goals remain unchanged. One task gets at most three automatic attempts; after that it is marked blocked with the provider's own message and stays there until you act. Nothing is retried on a fixed timer: recovery reads what actually happened to the turn, not how long it has been quiet. Existing DSH safety limits are not bypassed. Quota or credential errors, output limits, round limits and other non-retryable conditions are reported in recovery status rather than described as successful completion. Resolve the cause and explicitly continue the task through its original conversation or goal controls.
 
 ## Settings
 

@@ -8,6 +8,7 @@
         drainTimeoutMs: 600000
         retryMinMs: 1000
         retryMaxMs: 60000
+        maxAttempts: 3
         restartExitCode: 75
         restartBurstLimit: 5
         restartWindowMs: 60000

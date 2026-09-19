@@ -124,3 +124,67 @@ test('an actual unanswered user question permits safe restart without answering 
   const facts = await k.ctx.sessionQuery.readSession(a.id)
   assert.ok(facts.events.some(e => e.type === 'tool/call' && e.data.callId === 'ask-destination'))
 })
+
+async function pluginMessages(k, sessionId) {
+  const facts = await k.ctx.sessionQuery.readSession(sessionId)
+  return facts.events.filter(e => e.type === 'user/message' && e.data.source?.kind === 'plugin')
+}
+
+test('recovery work for one conversation never spills into another', { timeout: 20000 }, async t => {
+  const args = JSON.stringify({ questions: [{ id: 'destination', question: 'Which destination do you choose?' }] })
+  const entered = Promise.withResolvers()
+  const { k, api, exits } = await fixture(t, { userQuestions: true, response: request => request.sessionId !== 'session-spill-waiting' ? 'ordinary answer' : ({ chunks: [
+    { type: 'block-start', index: 0, blockType: 'tool-call' },
+    { type: 'tool-call-delta', index: 0, id: 'ask-destination', name: 'ask_user_question', argumentsDelta: args },
+    { type: 'block-end', index: 0, block: { type: 'tool-call', id: 'ask-destination', name: 'ask_user_question', arguments: args } },
+    { type: 'finish', reason: { kind: 'tool-calls' } },
+  ] }) })
+  k.ctx.on('user-questions/request', request => { entered.resolve(); return waitForAbort(request.signal) })
+  const waiting = await k.create('session-spill-waiting')
+  const other = await k.create('session-spill-other')
+  waiting.followup(k.message('Ask me where to go, then continue.'))
+  await entered.promise; await k.flush(waiting)
+  // A restart scan claims the conversation that is waiting for the human.
+  await api.recovery.discover()
+  await api.poll()
+  assert.ok(api.recovery.status().pending.some(j => j.sessionId === waiting.id && j.status === 'waiting-user'),
+    'an unanswered question keeps its recovery waiting')
+  const beforeOther = k.requests.length
+  other.followup(k.message('unrelated ordinary work', { id: 'spill-other-1' }))
+  await other.whenIdle(); await k.flush(other)
+  const afterOther = k.requests.length
+  for (let cycle = 0; cycle < 40; cycle++) await api.poll()
+  assert.equal(afterOther, beforeOther + 1, 'the unrelated conversation runs exactly its own turn')
+  assert.equal(k.requests.length, afterOther, 'no extra model turn is started anywhere')
+  assert.deepEqual(await pluginMessages(k, other.id), [], 'the unrelated conversation receives no plugin message')
+  assert.deepEqual(await pluginMessages(k, waiting.id), [], 'the waiting conversation is neither continued nor re-asked')
+  assert.equal(api.control.status().holding, 0, 'nothing is held')
+  assert.deepEqual(exits, [])
+})
+
+test('steady state touches no conversation at all' , { timeout: 20000 }, async t => {
+  const { k, api, exits } = await fixture(t)
+  const idle = await k.create('session-steady-idle')
+  const worker = await k.create('session-steady-worker')
+  const goal = k.ctx.goals.create(worker, { objective: 'keep working on its own task', maxGoalRounds: 3 })
+  k.ctx.goals.disarm(worker)
+  const before = k.requests.length
+  // Ordinary activity in both conversations, with nothing restarting.
+  idle.followup(k.message('an ordinary user turn', { id: 'steady-idle-1' }))
+  worker.followup(k.message('another ordinary turn', { id: 'steady-worker-1' }))
+  await idle.whenIdle(); await worker.whenIdle()
+  await k.flush(idle); await k.flush(worker)
+  const turnsAfterWork = k.requests.length
+  // Many poll cycles with no restart pending and no recovery work outstanding.
+  for (let cycle = 0; cycle < 40; cycle++) await api.poll()
+  assert.equal(k.requests.length, turnsAfterWork, 'the plugin never starts a model turn on its own')
+  assert.deepEqual(await pluginMessages(k, idle.id), [], 'no plugin message reaches the idle conversation')
+  assert.deepEqual(await pluginMessages(k, worker.id), [], 'no plugin message reaches the working conversation')
+  assert.equal(k.ctx.goals.get(worker).activation, 'disarmed', 'goal execution is never restarted outside recovery')
+  assert.equal(api.control.status().holding, 0, 'no conversation is ever held')
+  assert.equal(api.control.status().pending, null)
+  assert.equal(api.recovery.status().pending.length, 0, 'nothing is recorded while nothing is restarting')
+  assert.deepEqual(exits, [])
+  assert.equal(k.errors.length, 0)
+  assert.equal(k.requests.length, before + 2, 'exactly the two turns the user asked for')
+})

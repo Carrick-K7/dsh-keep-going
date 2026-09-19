@@ -663,19 +663,61 @@ test('a caller request whose continuation failed is blocked, never re-sent', bou
   assert.deepEqual(h.calls.queued, [])
 })
 
-test('a failure while nothing was restarting is never recovered', bounded, async () => {
-  const job = savedJob() // recorded during normal operation: no restart scope
+test('a record made during normal operation is dropped, never turned into work', bounded, async () => {
+  const job = savedJob({ restartScoped: false })
   const h = fixture({ jobs: [job], facts: { latest: workTurn(1, 1, temporary()) } })
   await h.recovery.tick()
-  assert.deepEqual(h.store.read().jobs, {}, 'the checkpoint is retired, not turned into work')
+  assert.deepEqual(h.store.read().jobs, {}, 'the record is redundant with the durable log: it is dropped')
   assert.deepEqual(h.calls.queued, [])
 })
 
-test('an interruption found in a checkpoint is still recovered', bounded, async () => {
-  const job = savedJob()
+test('a record made during normal operation never nudges a queued human message', bounded, async () => {
+  const input = message('queued-human-message'), job = inputJob(input, 20, { restartScoped: false })
+  const h = fixture({ jobs: [job], facts: {
+    latest: workTurn(1, 1, { kind: 'completed' }), pending: [{ seq: 20, message: input }],
+    receipts: new Map([[input.id, { state: 'pending', seq: 20, message: input }]]),
+  } })
+  await h.recovery.tick()
+  assert.deepEqual(h.calls.queued, [], 'a live conversation is never steered or re-queued')
+  assert.deepEqual(h.calls.injected, [])
+  assert.deepEqual(h.store.read().jobs, {})
+})
+
+test('a record made during normal operation never continues an open turn', bounded, async () => {
+  const job = savedJob({ restartScoped: false })
+  const h = fixture({ jobs: [job], facts: { latest: workTurn(1, 1, null) } })
+  await h.recovery.tick()
+  assert.deepEqual(h.calls.queued, [], 'an open turn is left to DSH itself')
+  assert.deepEqual(h.store.read().jobs, {})
+})
+
+test('a record made during normal operation never re-arms an active goal', bounded, async () => {
+  const job = goalJob({ restartScoped: false })
+  const h = fixture({ jobs: [job], facts: { goal: activeGoal(), goalOwned: true, goalSeq: 20, latest: workTurn(1, 1, temporary()) } })
+  await h.recovery.tick()
+  await h.recovery.tick()
+  assert.deepEqual(h.calls.resumed, [], 'goal execution is never restarted outside restart recovery')
+  assert.deepEqual(h.calls.queued, [])
+  assert.deepEqual(h.store.read().jobs, {})
+})
+
+test('a crash upgrade claims a provisional record before it can be delivered', bounded, async () => {
+  // The real boot sequence: discover() runs with restart scope before any tick,
+  // so work left by a crash becomes restart work and is then recovered once.
+  const job = savedJob({ restartScoped: false })
+  const h = fixture({ jobs: [job], facts: { latest: workTurn(1, 1, { kind: 'interrupted' }) } })
+  await h.recovery.discover()
+  assert.equal(h.store.read().jobs[job.key]?.restartScoped, true, 'the boot scan claims the record')
+  await h.recovery.tick()
+  assert.equal(h.calls.queued.length, 1, 'the interrupted turn is continued exactly once')
+  assert.equal(h.store.read().jobs[job.key].status, 'delivered')
+})
+
+test('a legacy record without a scope flag keeps restart semantics', bounded, async () => {
+  const job = savedJob() // written by an older version, which had no scope flag
   const h = fixture({ jobs: [job], facts: { latest: workTurn(1, 1, { kind: 'interrupted' }) } })
   await h.recovery.tick()
-  assert.equal(h.calls.queued.length, 1, 'a crash is exactly what this work was recorded for')
+  assert.equal(h.calls.queued.length, 1)
   assert.equal(h.store.read().jobs[job.key].status, 'delivered')
 })
 

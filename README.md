@@ -34,7 +34,7 @@ Copied history in a new fork does not by itself authorize a second copy of the p
 Distributed through GitHub only; this package is not published to npm.
 
 ```sh
-dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.5
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.6
 ```
 
 ## When it acts — and when it stays out of the way
@@ -44,6 +44,7 @@ Recovery runs **once after each process restart**, then the plugin goes dormant:
 - At boot it scans persisted sessions once, restores eligible original work, and stops.
 - Only a **restart interruption** is recoverable. While DSH runs normally the plugin keeps a lightweight checkpoint of unfinished turns, so a crash during one can still be found; but a task that failed while DSH was up — a provider error, a blocked turn, a task you stopped — is not restart work. Its checkpoint is retired and nothing is ever sent, retried or resumed behind your back.
 - There is **no periodic scanning and no automatic restarting of conversations** while DSH is running normally. A user opening an old conversation is a normal action, not a restart: nothing is woken or re-armed by that alone.
+- **While DSH runs normally this plugin does nothing to your conversations.** It writes no recovery record, resumes no session, sends no message, holds no maintenance lock and changes no goal; the only activity is a 500 ms no-op check for a pending restart request. Work left behind by an earlier restart stays scoped to the conversation it belongs to: a question still waits for your answer, and a conversation that was not part of that restart is never touched.
 - An `active` goal interrupted by a restart is re-armed exactly once and handed entirely to DSH's own goal driver. If the driver later disarms it (an error, a limit), that is DSH's normal lifecycle — the plugin does not keep re-arming it in the background; only the next process restart recovers it again.
 - The only exception: while a requested restart is waiting for running work (drain), the plugin tracks live sessions so the exit is safe; and a goal that was interrupted while it was running is restored as a goal round, not as a generic “continue” — old work belonging to an active goal is handed to the goal driver, so it never receives someone else's prompt.
 

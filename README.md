@@ -33,8 +33,10 @@ Copied history in a new fork does not by itself authorize a second copy of the p
 
 Distributed through GitHub only; this package is not published to npm.
 
+**Version 0.3.0 targets DSH 0.2.0-rc.2 (Cordis 4.0.4 / Schemastery 3.18.4).** It no longer supports the DSH 0.1 settings API. See [the release notes](docs/release-notes-0.3.0.md) and [migration notes](docs/compatibility-dsh-0.2.md) before deploying. Installation does not migrate your live configuration or restart DSH automatically.
+
 ```sh
-dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.6
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.3.0
 ```
 
 ## When it acts — and when it stays out of the way
@@ -42,15 +44,15 @@ dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.gi
 Recovery runs **once after each process restart**, then the plugin goes dormant:
 
 - At boot it scans persisted sessions once, restores eligible original work, and stops.
-- Only a **restart interruption** is recoverable. While DSH runs normally the plugin keeps a lightweight checkpoint of unfinished turns, so a crash during one can still be found; but a task that failed while DSH was up — a provider error, a blocked turn, a task you stopped — is not restart work. Its checkpoint is retired and nothing is ever sent, retried or resumed behind your back.
+- Only a **restart interruption** is recoverable. DSH's own durable history identifies crash-interrupted work; the plugin does not create recovery records for unrelated ordinary activity. A provider error, blocked turn or user stop while DSH was up is not restart work.
 - There is **no periodic scanning and no automatic restarting of conversations** while DSH is running normally. A user opening an old conversation is a normal action, not a restart: nothing is woken or re-armed by that alone.
-- **While DSH runs normally this plugin does nothing to your conversations.** It writes no recovery record, resumes no session, sends no message, holds no maintenance lock and changes no goal; the only activity is a 500 ms no-op check for a pending restart request. Work left behind by an earlier restart stays scoped to the conversation it belongs to: a question still waits for your answer, and a conversation that was not part of that restart is never touched.
+- **Normal activity does not authorize recovery.** With no pending restart or existing recovery, the plugin creates no records, resumes no sessions, sends no messages, holds no maintenance locks and changes no goals. The 500 ms control check does not scan sessions. Existing restart recovery alone keeps observing its own conversation's replies and terminal events: after your answer, a waiting goal can return to the native driver. Unrelated conversations remain untouched.
 - An `active` goal interrupted by a restart is re-armed exactly once and handed entirely to DSH's own goal driver. If the driver later disarms it (an error, a limit), that is DSH's normal lifecycle — the plugin does not keep re-arming it in the background; only the next process restart recovers it again.
 - The only exception: while a requested restart is waiting for running work (drain), the plugin tracks live sessions so the exit is safe; and a goal that was interrupted while it was running is restored as a goal round, not as a generic “continue” — old work belonging to an active goal is handed to the goal driver, so it never receives someone else's prompt.
 
 Restart DSH after installation. **A service manager must start DSH again when it exits.** This plugin does not launch replacement processes.
 
-Tested with DSH `0.1.5-rc.2`. The profile must provide native sessions, persistent session query, the session controller, goals, tools and commands. Missing required services are a deployment error, not a silently disabled recovery feature.
+Targets and tests DSH `0.2.0-rc.2`; this revision no longer supports the old 0.1 settings API. The profile must provide native sessions, persistent session query, the session controller, goals, tools and commands. Missing required services are a deployment error, not a silently disabled recovery feature.
 
 ## Restart and status
 
@@ -92,17 +94,21 @@ Paused, completed and blocked goals remain unchanged. One task gets at most thre
 
 ## Settings
 
-Set these under `dsh-keep-going` in `settings.yaml`:
+DSH 0.2 exposes the plugin's volatile Config fields in its settings form, keyed by the profile entry ID **`keep-going`**. Alternatively merge this entry patch into your profile (not the removed `settings.yaml`):
 
 ```yaml
-dsh-keep-going:
-  drainTimeoutMs: 600000    # Initial wait: 10 minutes. Cutoff requires force:true.
-  retryMinMs: 1000
-  retryMaxMs: 60000
-  restartExitCode: 75      # Configure the service manager to restart this code.
-  restartBurstLimit: 5
-  restartWindowMs: 60000
+- id: keep-going
+  config:
+    drainTimeoutMs: 600000  # Initial wait: 10 minutes. Cutoff requires force:true.
+    retryMinMs: 1000
+    retryMaxMs: 60000
+    maxAttempts: 3
+    restartExitCode: 75     # Configure the service manager to restart this code.
+    restartBurstLimit: 5
+    restartWindowMs: 60000
 ```
+
+Keep `retryMaxMs >= retryMinMs`. These values are read through the loader's live references; pending restart deadlines are not rewritten retroactively. `stateDirectory` is non-volatile and requires a plugin reload. Before upgrading, preserve the old settings/backup and manually review copying the old `dsh-keep-going` section into the `keep-going` entry; its old namespace is not automatically mapped by DSH 0.2. Never silently change the recovery directory during that migration.
 
 A burst of restarts delays recovery until the window passes; it does not delete tasks or permanently suppress their resumption. `stateDirectory` can select a separate recovery directory for an independent profile; changing it requires restarting DSH.
 
@@ -137,6 +143,7 @@ Automated tests verify distinct original chat/thread routing through a fixture a
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm check
 pnpm test
+pnpm test:web  # Mandatory isolated shipped-CLI cold-recovery acceptance; no skip.
 ```
 
 Tests use real Cordis, DSH agents, goals, question tools and local persistence. Only the model and channel adapter are deterministic fixtures. Separate test processes are killed and restarted to check recovery without browser connections, repeated interruption, stable recovery IDs, isolated caller instructions, pending questions and retries. No test touches live DSH sessions or sends external chat messages.

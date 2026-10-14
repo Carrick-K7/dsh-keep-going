@@ -216,7 +216,7 @@ test('waking a native pending inbox keeps original A then B order', { timeout: 1
   await k.flush(a)
   assert.equal(a.status, 'idle')
   adapter.queue(a, first, k.message('neutral recovery', { id: 'msg-order-nudge',
-    source: { kind: 'plugin', plugin: 'dsh-keep-going', form: 'instructions' } }))
+    source: { kind: 'dsh-keep-going', form: 'instructions' } }))
   await a.whenIdle(); await k.flush(a)
   const order = a.session.snapshotEvents().filter(e => e.type === 'user/message' && e.data.source.kind === 'user').map(e => e.data.id)
   assert.deepEqual(order, [first.id, second.id])

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import * as plugin from '../lib/index.js'
+import { isRecoveryMessage } from '../lib/messages.js'
 import { createModuleLoader, createNativeKernel, waitForAbort } from './native-kernel.mjs'
 const loadModule = createModuleLoader(process.env.DSH_NATIVE_TEST_RESOLVE_FROM ?? new URL('../package.json', import.meta.url))
 
@@ -127,7 +128,7 @@ test('an actual unanswered user question permits safe restart without answering 
 
 async function pluginMessages(k, sessionId) {
   const facts = await k.ctx.sessionQuery.readSession(sessionId)
-  return facts.events.filter(e => e.type === 'user/message' && e.data.source?.kind === 'plugin')
+  return facts.events.filter(e => e.type === 'user/message' && isRecoveryMessage(e.data))
 }
 
 test('recovery work for one conversation never spills into another', { timeout: 20000 }, async t => {

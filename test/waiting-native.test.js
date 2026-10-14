@@ -88,10 +88,13 @@ async function cycle(run, rounds = 3) {
 }
 
 function calls(events) { return events.filter((event) => event.type === 'tool/call' && event.data.name === 'ask_user_question') }
+function messageResults(messages, callId) {
+  return messages.flatMap(message => message.role === 'tool' ? [message]
+    : message.content.filter(block => block.type === 'tool-result'))
+    .filter(result => result.toolCallId === callId)
+}
 function results(events, callId) {
-  return events.filter((event) => event.type === 'tool/result')
-    .flatMap((event) => event.data.message.content)
-    .filter((block) => block.type === 'tool-result' && block.toolCallId === callId)
+  return messageResults(events.filter(event => event.type === 'tool/result').map(event => event.data.message), callId)
 }
 
 for (const activeGoal of [true, false]) {
@@ -172,7 +175,9 @@ for (const activeGoal of [true, false]) {
     assert.equal(retainedCalls.length, 1)
     assert.equal(retainedCalls[0].data.callId, callId)
     assert.deepEqual(JSON.parse(retainedCalls[0].data.arguments).questions, [question])
-    assert.ok(results(resumed.session.snapshotEvents(), callId).every((block) => block.isError),
+    const failedResults = results(resumed.session.snapshotEvents(), callId)
+    assert.equal(failedResults.length, 1, 'the real failed result is parsed, not silently ignored')
+    assert.ok(failedResults.every(result => result.isError),
       'shutdown/error tool settlement must not masquerade as an answer')
 
     // This is the intended public fallback: a NEW actual human message in the
@@ -252,8 +257,7 @@ test('a real successful question answer does not falsely block interrupted activ
   assert.equal(second.k.ctx.goals.get(second.k.ctx.agents.get(id)).phase, 'complete')
   assert.deepEqual((await second.adapter.inspect(id)).waiting, [])
   assert.deepEqual(store.read().jobs, {})
-  const oldAnswer = second.k.requests[0].messages.flatMap((message) => message.content)
-    .find((block) => block.type === 'tool-result' && block.toolCallId === callId)
+  const [oldAnswer] = messageResults(second.k.requests[0].messages, callId)
   assert.equal(oldAnswer.isError, false)
   assert.deepEqual(JSON.parse(oldAnswer.content.filter((block) => block.type === 'text').map((block) => block.text).join('')), answer)
   assert.equal(second.k.errors.length, 0)

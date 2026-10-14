@@ -173,7 +173,7 @@ test('SIGKILL cold recovery restores original tasks/goals and isolates caller co
   const aRequest = recovered.requests.find((request) => request.sessionId === a.id)
   const bRequest = recovered.requests.find((request) => request.sessionId === b.id)
   assert.ok(aRequest.messages.some((message) => message.text === a.privatePrompt))
-  assert.ok(bRequest.messages.some((message) => message.source.kind === 'plugin' && message.text === CONTINUE))
+  assert.ok(bRequest.messages.some((message) => message.source.kind === 'dsh-keep-going' && message.text === CONTINUE))
   assert.ok(!bRequest.messages.some((message) => message.text === b.privatePrompt))
   assert.equal(recovered.facts[a.id].users.filter((message) => message.id === originalJobs[0].messageId).length, 1)
   for (const state of ['paused', 'complete']) {

@@ -45,7 +45,7 @@ function waitForAbort(signal) {
 const text = (message) => message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n')
 
 export const name = 'keep-going-full-web-fixture'
-export const inject = ['llm', 'agents', 'sessions', 'sessionProjections', 'sessionQuery', 'sessionController', 'goals', 'commands', 'tools', 'webServer', 'webRuntime', 'connection', 'agentDefaultModel']
+export const inject = ['llm', 'agents', 'sessions', 'sessionProjections', 'sessionQuery', 'sessionController', 'goals', 'commands', 'tools', 'webServer', 'webRuntime', 'connection', 'agentDefaultModel', 'settings']
 export function apply(ctx) {
   assert.ok(ctx.sessionController instanceof SessionController, 'must use the actual shipped Web SessionController')
   assert.equal(ctx.sessionController.fixture, undefined)
@@ -66,7 +66,7 @@ export function apply(ctx) {
   class FixtureLlm extends LlmAdapter {
     async listModels(provider) {
       const item = manifest.find((entry) => entry.provider === provider)
-      return [{ id: item?.model ?? 'deliberately-different-default', name: 'Offline full-Web fixture' }]
+      return [{ provider, id: item?.model ?? 'deliberately-different-default', name: 'Offline full-Web fixture' }]
     }
     async *stream(request) {
       try {
@@ -99,7 +99,7 @@ export function apply(ctx) {
     }
   }
   ctx.llm.registerAdapter([...manifest.map((item) => item.provider), 'full-web-unused-default'], new FixtureLlm())
-  ctx.on('agent/session-start', ({ agent, source }) => starts.push({ id: agent.id, source }))
+  ctx.on('agent/created', ({ agent, source }) => starts.push({ id: agent.id, source }))
   ctx.on('agent/error', ({ agent, error }) => {
     errors.push({ id: agent.id, error: String(error) })
     fail(error)
@@ -115,6 +115,9 @@ export function apply(ctx) {
   ctx.inject(['keepGoing'], (scope) => {
     void (async () => {
       await scope.keepGoing.ready
+      await scope.root.loader.await()
+      const settingsForm = scope.settings.describe().find(form => form.ns === 'keep-going')
+      assert.ok(settingsForm, 'the real settled Web composition exposes keep-going settings')
       assert.equal(bootLive, 0, 'nothing cold-restored before real keep-going activation')
       if (mode === 'seed') {
         // sessionController.selectModel also persists the GLOBAL default
@@ -137,7 +140,7 @@ export function apply(ctx) {
         }
         await scope.agentDefaultModel.saveSelection(pristineDefault)
         assert.equal(requests.length, manifest.length)
-        await send({ type: 'seed-ready', bootLive, manifest, requests, outboundAttempts,
+        await send({ type: 'seed-ready', bootLive, manifest, requests, outboundAttempts, settingsForm,
           origin: `http://${scope.webServer.host}:${scope.webServer.port}`,
           launchUrl: scope.connection.authenticatedUrl(`http://${scope.webServer.host}:${scope.webServer.port}`),
           controllerIsShipped: scope.sessionController instanceof SessionController,
@@ -150,7 +153,7 @@ export function apply(ctx) {
               goal: scope.goals.get(agent) ?? null }
           }),
         })
-        return // The parent SIGKILLs this exact child after durable request entry.
+        return // The parent signals this exact child after durable request entry.
       }
 
       // Recovery is entirely the real keep-going startup/periodic poll. This
@@ -171,7 +174,7 @@ export function apply(ctx) {
           modelSelection: scope.sessionProjections.stateOf(agent.session, 'modelSelection'),
         }
       })
-      await send({ type: 'recovered', bootLive, manifest, requests, outputs, starts, sessions, errors, outboundAttempts,
+      await send({ type: 'recovered', bootLive, manifest, requests, outputs, starts, sessions, errors, outboundAttempts, settingsForm,
         origin: `http://${scope.webServer.host}:${scope.webServer.port}`,
         launchUrl: scope.connection.authenticatedUrl(`http://${scope.webServer.host}:${scope.webServer.port}`),
         controllerIsShipped: scope.sessionController instanceof SessionController,

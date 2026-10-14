@@ -745,3 +745,67 @@ for (const [label, latest] of [
     assert.deepEqual(h.store.read().jobs, {}, 'the settled record is retired')
   })
 }
+
+test('cancel during the final checkpoint removes late provisional records without another tick', bounded, async t => {
+  const h = fixture({ facts: { goal: activeGoal(), goalOwned: true, goalSeq: 20 } })
+  const entered = barrier(), release = barrier()
+  t.after(() => release.resolve())
+  const exits = []
+  const control = createControl({ adapter: h.adapter, recovery: h.recovery, config, appExit: code => exits.push(code), log: silent })
+  assert.equal((await control.request(h.agent.id)).ok, true)
+  h.adapter.inspect = async () => { entered.resolve(); await release.promise; return structuredClone(h.facts) }
+  const checking = control.check()
+  await entered.promise
+  assert.equal((await control.cancel(h.agent.id)).ok, true)
+  release.resolve()
+  await checking
+  assert.deepEqual(h.store.read().jobs, {}, 'late checkpoint records belong to the canceled request only')
+  assert.deepEqual(h.calls.resumed, [])
+  assert.deepEqual(exits, [])
+})
+
+test('uncommitted preparation is rejected before inspect or restore', bounded, async () => {
+  const job = savedJob({ restartScoped: false, preparationId: 'canceled-restart' })
+  const h = fixture({ jobs: [job] })
+  h.adapter.inspect = async () => { assert.fail('preparation must not inspect a conversation') }
+  await h.recovery.tick()
+  assert.deepEqual(h.calls.restored, [])
+  assert.deepEqual(h.calls.queued, [])
+  assert.deepEqual(h.store.read().jobs, {})
+})
+
+test('archive takes precedence even over a delivered job awaiting its verdict', bounded, async () => {
+  const job = savedJob({ status: 'delivered' })
+  const h = fixture({ jobs: [job], facts: {
+    archived: true, latest: workTurn(2, 20, temporary()),
+    receipts: new Map([[job.messageId, { state: 'admitted', turn: 2, seq: 21, message: message(job.messageId) }]]),
+  } })
+  await h.recovery.tick()
+  assert.deepEqual(h.calls.restored, [])
+  assert.deepEqual(h.calls.queued, [])
+  assert.deepEqual(h.store.read().jobs, {})
+})
+
+test('archive arriving while restore is awaited fences all continuation effects', bounded, async () => {
+  const job = goalJob({ restartScoped: true })
+  const h = fixture({ jobs: [job], facts: { goal: activeGoal(), goalOwned: true, goalSeq: 20 } })
+  h.adapter.restore = async () => { h.facts.archived = true; return h.agent }
+  await h.recovery.tick()
+  assert.deepEqual(h.calls.resumed, [])
+  assert.deepEqual(h.calls.queued, [])
+  assert.deepEqual(h.store.read().jobs, {})
+})
+
+test('a failed restart preparation retires only its own provisional records', bounded, async () => {
+  const h = fixture({ facts: { goal: activeGoal(), goalOwned: true, goalSeq: 20 } })
+  h.adapter.flush = async () => { throw new Error('checkpoint storage fault') }
+  const exits = []
+  const control = createControl({ adapter: h.adapter, recovery: h.recovery, config, appExit: code => exits.push(code), log: silent })
+  const result = await control.request(h.agent.id)
+  assert.equal(result.ok, false)
+  assert.equal(control.status().pending, null)
+  await h.recovery.tick()
+  assert.deepEqual(h.store.read().jobs, {})
+  assert.deepEqual(h.calls.resumed, [])
+  assert.deepEqual(exits, [])
+})

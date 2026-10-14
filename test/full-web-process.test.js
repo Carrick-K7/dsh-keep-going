@@ -12,6 +12,7 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { CONTINUE } from '../lib/recovery-policy.js'
+import { createStore } from '../lib/store.js'
 
 const bin = process.env.DSH_WEB_TEST_BIN
 const resolver = process.env.DSH_NATIVE_TEST_RESOLVE_FROM
@@ -146,7 +147,21 @@ async function assertRealWeb({ origin, launchUrl }) {
   assert.match(await response.text(), /__DSH_BOOT__/)
 }
 
-test('real Web CLI cold-restores ordinary and active-goal sessions through shipped SessionController', {
+function assertSettingsForm(form) {
+  assert.equal(form.ns, 'keep-going')
+  assert.equal(form.applies, 'live')
+  assert.equal(form.autoGenerate, true)
+  const hotValues = { drainTimeoutMs: 600000, retryMinMs: 100, retryMaxMs: 1000,
+    maxAttempts: 3, scanIntervalMs: 1000, restartExitCode: 75,
+    restartBurstLimit: 5, restartWindowMs: 60000 }
+  assert.deepEqual(form.value, hotValues, 'volatile defaults and overlay values are real plain form values')
+  const fields = form.schema.refs[form.schema.uid].dict
+  assert.deepEqual(Object.keys(fields).sort(), Object.keys(hotValues).sort())
+  assert.equal(Object.hasOwn(form.value, 'stateDirectory'), false)
+  assert.equal(Object.hasOwn(fields, 'stateDirectory'), false, 'ordinary store config is never a live setting')
+}
+
+for (const exitSignal of ['SIGKILL', 'SIGTERM']) test(`real Web CLI cold-restores ordinary and active-goal sessions after ${exitSignal} through shipped SessionController`, {
   skip: bin ? false : 'Set DSH_WEB_TEST_BIN to opt into full shipped CLI acceptance', timeout: 55000,
 }, async (t) => {
   const { root, spawn } = await ownedProcesses(t)
@@ -159,8 +174,22 @@ test('real Web CLI cold-restores ordinary and active-goal sessions through shipp
   assert.ok(seed.sessions.every((session) => session.status === 'running' && session.turnEnds === 0))
   assert.equal(seed.requests.length, 2)
   assert.deepEqual(seed.outboundAttempts, [])
+  assertSettingsForm(seed.settingsForm)
   await assertRealWeb(seed)
-  assert.equal((await first.stop('SIGKILL')).signal, 'SIGKILL')
+  const store = createStore(join(root, 'recovery'))
+  assert.deepEqual(store.read().jobs, {}, 'steady-state work has no recovery checkpoint before the exit signal')
+  const stopped = await first.stop(exitSignal)
+  const checkpoint = store.read()
+  if (exitSignal === 'SIGKILL') {
+    assert.equal(stopped.signal, 'SIGKILL')
+    assert.deepEqual(checkpoint.jobs, {}, 'a crash has no cooperative noteExit checkpoint')
+    assert.deepEqual(checkpoint.recentRestarts, [])
+  } else {
+    assert.deepEqual(stopped, { code: 0, signal: null }, 'SIGTERM completes the shipped graceful shutdown')
+    assert.equal(checkpoint.recentRestarts.length, 1, 'noteExit persisted exactly one exit intent')
+    assert.deepEqual(Object.values(checkpoint.jobs).map(job => job.sessionId).sort(), seed.manifest.map(item => item.id).sort())
+    assert.ok(Object.values(checkpoint.jobs).every(job => job.restartScoped === true))
+  }
 
   const next = spawn('recover')
   const result = await next.wait('recovered')
@@ -190,15 +219,20 @@ test('real Web CLI cold-restores ordinary and active-goal sessions through shipp
     assert.equal(session.requestConfig.provider, item.provider)
     assert.equal(session.requestConfig.model, item.model)
     assert.equal(session.status, 'idle')
-    assert.ok(session.reasons.some((reason) => reason.kind === 'interrupted'))
+    // The shipped CLI leaves an open persisted turn even on clean SIGTERM;
+    // native cold restoration closes it as interrupted. Direct kernel disposal
+    // can differ, so verify the actual CLI history, not an assumed abort reason.
+    assert.ok(session.reasons.some(reason => reason.kind === 'interrupted'), JSON.stringify(session.reasons))
     assert.equal(result.outputs.find((output) => output.sessionId === item.id).text, `FULL_WEB_RECOVERED:${item.id}`)
     if (item.kind === 'goal') {
       assert.equal(session.goal.id, seed.sessions.find((entry) => entry.id === item.id).goal.id)
       assert.equal(session.goal.phase, 'complete')
       assert.equal(session.goal.roundsStarted, 1)
       assert.ok(request.messages.some((message) => message.source.kind === 'goal' && message.source.round === 1))
-    } else assert.ok(request.messages.some((message) => message.source.kind === 'plugin' && message.text === CONTINUE))
+    } else assert.ok(request.messages.some((message) => message.source.kind === 'dsh-keep-going' && message.text === CONTINUE))
   }
+  assertSettingsForm(result.settingsForm)
+  assert.deepEqual(store.read().jobs, {}, 'both restored tasks have settled durably')
   await assertRealWeb(result)
   assert.equal((await next.stop('SIGTERM')).code, 0)
 })

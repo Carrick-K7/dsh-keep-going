@@ -33,8 +33,10 @@
 
 只通过 GitHub 分发，不发布到 npm。
 
+**0.3.0 面向 DSH 0.2.0-rc.2（Cordis 4.0.4 / Schemastery 3.18.4）**，不再支持 DSH 0.1 设置 API。部署前阅读[发布说明](docs/release-notes-0.3.0.md)和[迁移说明](docs/compatibility-dsh-0.2.md)。安装不会自动迁移线上配置或重启 DSH。
+
 ```sh
-dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.2.6
+dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.git#0.3.0
 ```
 
 ## 何时生效，何时绝不打扰
@@ -42,15 +44,15 @@ dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.gi
 **每次进程重启后只做一次恢复**，随后插件进入休眠：
 
 - 启动时扫描一次已保存的会话，恢复符合条件的原有工作，然后停下。
-- 只有**被重启打断**的工作才属于恢复范围。DSH 正常运行时会留下轻量检查点，因此运行中崩溃仍能被发现；但在正常运行期间失败的任务——提供方报错、任务被判定 blocked、你自己停下的任务——都不属于重启遗留的工作：检查点会被收回，不会向你背后发送、重试或恢复任何东西。
+- 只有**被重启打断**的工作才属于恢复范围。DSH 自身的持久历史用于发现崩溃遗留任务；插件不会为无关的日常活动创建恢复记录。正常运行期间的提供方报错、blocked 或手动停止都不属于重启遗留工作。
 - 正常运行期间**不做周期扫描，也不会自动重启对话**。你手动打开一个旧对话是正常操作，不是重启——插件不会因此唤醒或重新武装任何东西。
-- **DSH 正常运行期间，插件对你的对话什么都不做。** 不写恢复记录、不恢复会话、不发消息、不加维护锁、不改目标状态；唯一的动作是每 500ms 检查一次是否有待执行的重启请求。上一次重启遗留的工作只作用于它所属的那个对话：提问中的对话继续等你回答，与那一次重启无关的对话绝不被触碰。
+- **日常活动不授予恢复权限。** 没有待执行重启或既有恢复任务时，插件不创建记录、不恢复会话、不发消息、不加维护锁、不改目标；500ms 控制检查不会扫描会话。只有上次重启遗留的恢复任务继续观察所属对话的答复和终止事件：用户回答后，等待中的目标才交回原生驱动。无关对话不受影响。
 - 被重启打断的 `active` 目标只被**重新武装一次**，随后完全交给 DSH 自己的目标驱动器。驱动器之后因错误或上限把它解除，那是 DSH 正常的生命周期——插件不会在后台反复重新武装，只有下一次进程重启才会再次恢复。
 - 唯一的例外：发起的重启正在等待运行中的任务（排水）时，插件会跟踪现场会话以保证退出安全。另外，属于 active 目标的旧工作一律移交目标驱动器续轮，不会收到一条通用的“继续”——它永远不会替别人的任务跑。
 
 安装后重启 DSH。**必须有服务管理器在进程退出后重新启动 DSH。** 插件自己不启动替代进程。
 
-测试版本为 DSH `0.1.5-rc.2`。当前 profile 必须提供原生会话、持久化会话查询、会话控制器、目标、工具和命令服务。缺少必要服务是部署错误，不能悄悄关闭恢复功能当作成功。
+适配和测试基准为 DSH `0.2.0-rc.2`；本修订不再支持旧 0.1 设置 API。当前 profile 必须提供原生会话、持久化会话查询、会话控制器、目标、工具和命令服务。缺少必要服务是部署错误，不能悄悄关闭恢复功能当作成功。
 
 ## 重启与状态
 
@@ -92,17 +94,21 @@ dsh plugin --profile web add git+https://github.com/Carrick-K7/dsh-keep-going.gi
 
 ## 设置
 
-在 `settings.yaml` 的 `dsh-keep-going` 段配置：
+DSH 0.2 根据插件 Config 的 volatile 字段生成设置表单，命名空间使用 profile entry ID **`keep-going`**。也可将以下 entry patch 合并到 profile（不是已移除的 `settings.yaml`）：
 
 ```yaml
-dsh-keep-going:
-  drainTimeoutMs: 600000    # 首次等待 10 分钟；到期中断必须显式 force:true。
-  retryMinMs: 1000
-  retryMaxMs: 60000
-  restartExitCode: 75      # 服务管理器应配置为重启这个退出码。
-  restartBurstLimit: 5
-  restartWindowMs: 60000
+- id: keep-going
+  config:
+    drainTimeoutMs: 600000  # 首次等待 10 分钟；到期中断必须显式 force:true。
+    retryMinMs: 1000
+    retryMaxMs: 60000
+    maxAttempts: 3
+    restartExitCode: 75     # 服务管理器应配置为重启这个退出码。
+    restartBurstLimit: 5
+    restartWindowMs: 60000
 ```
+
+须保持 `retryMaxMs >= retryMinMs`。上述参数通过 loader 的实时引用读取；已经安排的重启期限不会被追溯改写。`stateDirectory` 不是热字段，修改需重新加载插件。升级前保留旧设置及导入备份，人工核对把旧 `dsh-keep-going` 节复制到 `keep-going` entry；DSH 0.2 不会自动映射此旧命名空间，迁移时不能悄悄换掉恢复目录。
 
 短时间反复重启时，会等这个时间窗过去再恢复；不会删除任务或永久禁止继续。`stateDirectory` 可为独立 profile 指定单独的恢复目录，修改它后需要重启 DSH。
 
@@ -137,6 +143,7 @@ RestartSec=3
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm check
 pnpm test
+pnpm test:web  # 独立进程真实 CLI 冷恢复验收，必须执行、不能跳过。
 ```
 
 测试使用真实的 Cordis、DSH 会话、目标、提问工具与本地持久化；只有模型和聊天适配器是可控制的测试替身。测试会终止并重启独立子进程，验证不连接浏览器也能恢复、再次中断不丢记录、固定恢复标识、指令隔离、等待用户和失败重试。测试不操作线上会话，也不发送外部聊天消息。

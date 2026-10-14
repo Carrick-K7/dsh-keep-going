@@ -6,7 +6,7 @@
  * Dependencies are resolved by ordinary import unless loadModule is supplied.
  * createModuleLoader('/some/install/package.json') uses that installation's
  * resolution without copying/symlinking its node_modules into this repository.
- * Match the DSH packages to 0.1.5-rc.2 and Cordis to its installed 4.x version.
+ * Match the DSH packages to 0.2.0-rc.2 and Cordis to its installed 4.0.4 version.
  */
 import { mkdir } from 'node:fs/promises'
 import { createRequire } from 'node:module'

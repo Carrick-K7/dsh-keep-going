@@ -2,6 +2,8 @@
 
 English | [中文](README.zh-CN.md)
 
+> **Discontinued — 2026-10-22.** This project will not be developed or maintained further, including compatibility and security updates. **0.3.0 is the final version**; existing tags and source history remain available for reference, not as a support commitment. New installations are not recommended. See [the retirement decision and removal guide](docs/RETIREMENT.md). The documentation below describes the historical implementation.
+
 **A gateway restart should not leave every unfinished conversation waiting for you to say “continue”.**
 
 ## The problem

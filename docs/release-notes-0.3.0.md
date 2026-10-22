@@ -1,4 +1,6 @@
-# 0.3.0 — DSH 0.2 compatibility and recovery correctness
+# 0.3.0 — final version (discontinued)
+
+> **Retired on 2026-10-22.** No further development, compatibility fixes or security updates are planned. Version 0.3.0 is retained as the final historical version; its existing tag is unchanged. New installations are not recommended. See [the retirement decision and removal guide](RETIREMENT.md). The release and verification details below describe the original 0.3.0 release, not a new verification against later DSH versions.
 
 ## Breaking compatibility change
 
